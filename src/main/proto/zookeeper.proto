@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "uber.proto.zk";
+option java_outer_classname = "UberZKObjects";
+
+package uber.zk;
+
+message Server {
+  bytes id = 1;
+  string host = 2;
+
+  message Ports {
+    int32 grpc = 1;
+    int32 rest = 2;
+  }
+  Ports ports = 3;
+}
