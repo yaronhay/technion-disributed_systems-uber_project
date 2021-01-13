@@ -24,8 +24,12 @@ public class Host {
     public static String hostList(List<Host> hostList) {
         var temp = hostList
                 .stream()
-                .map(host -> host.ip.getHostAddress() + ":" + host.port)
+                .map(Host::str)
                 .collect(Collectors.toList());
         return String.join(",", temp);
+    }
+
+    public String str() {
+        return this.ip.getHostAddress() + ":" + this.port;
     }
 }

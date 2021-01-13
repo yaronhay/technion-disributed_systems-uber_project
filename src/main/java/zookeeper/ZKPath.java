@@ -4,6 +4,7 @@ package zookeeper;
 import org.javatuples.Pair;
 
 import java.util.*;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -81,13 +82,14 @@ public class ZKPath {
 
     public ZKPath prefix(int i) {
         var nc = i + 1;
-        Function<Integer, ZKPath> pref = nodeCount -> {
+        var pref = new Pointer<BiFunction<Integer, ZKPath, ZKPath>>();
+        pref.val = (nodeCount, thisPath) -> {
             if (nodeCount == 0) {
                 return new ZKPath();
-            } else if (nodeCount <= this.parent.length()) {
-                return this.parent.prefix(nodeCount);
+            } else if (nodeCount <= thisPath.parent.length()) {
+                return pref.val.apply(nodeCount, thisPath.parent);
             } else if (nodeCount == this.length()) {
-                return this;
+                return thisPath;
             } else if (nodeCount < this.length()) {
                 var count = this.length() - this.parent.length();
                 return new ZKPath(
@@ -98,7 +100,7 @@ public class ZKPath {
                 throw new IndexOutOfBoundsException("Prefix length is longer than size of path");
             }
         };
-        return pref.apply(nc);
+        return pref.val.apply(nc, this);
     }
 
     public String get(int idx) {
@@ -152,8 +154,14 @@ public class ZKPath {
         }
 
         */
-        var shard = new UUID(0, 1);
-        var zkPath = ZK.Path("shard_" + shard.toString(), "servers");
+//        var shard = new UUID(0, 1);
+//        var zkPath = ZK.Path("shard_" + shard.toString(), "servers");
+//        for (int i = 0; i < zkPath.length(); i++) {  // i = 1 to skip teh first prefix
+//            var subpath = zkPath.prefix(i);
+//            System.out.println(subpath.str());
+//        }
+
+        var zkPath = ZK.Path("shards").append("shard").append("servers");
         for (int i = 0; i < zkPath.length(); i++) {  // i = 1 to skip teh first prefix
             var subpath = zkPath.prefix(i);
             System.out.println(subpath.str());

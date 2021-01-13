@@ -58,11 +58,20 @@ public class ZKConnection {
 
     public void createPersistentPath(ZKPath zkPath)
             throws InterruptedException, KeeperException {
-        for (int i = 0; i < zkPath.length(); i++) {  // i = 1 to skip teh first prefix
+        for (int i = 0; i < zkPath.length(); i++) {
             var subpath = zkPath.prefix(i);
             if (!this.nodeExists(subpath)) {
                 log.debug("Path Create Node {} Does not Exists", subpath.str());
-                this.createRegularNode(subpath);
+
+                try {
+                    this.createNode(subpath, CreateMode.PERSISTENT);
+                } catch (KeeperException e) {
+                    if (e.code() != KeeperException.Code.NODEEXISTS) {
+                        throw e;
+                    } else {
+                        log.debug("Path Create Node {} Exists", subpath.str());
+                    }
+                }
             } else {
                 log.debug("Path Create Node {} Exists", subpath.str());
             }

@@ -2,10 +2,14 @@ package cfg;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import uber.proto.objects.City;
+import uber.proto.objects.ID;
 import utils.Host;
+import utils.UUID;
 
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.List;
 
 public class CONFIG {
@@ -40,32 +44,45 @@ public class CONFIG {
     }
 
     // Index is city id
-    public final static String[] cities = {
-            "A",
-            "B",
-            "C"
-    };
+    public final static List<String> cities = new LinkedList<>();
+
 
     // Index is server id
-    public final static Server[] servers = {
-            new Server("localhost", 1, 1000, 1000),
-            new Server("localhost", 1, 1000, 1000),
-            new Server("localhost", 1, 1000, 1000),
-            new Server("localhost", 1, 1000, 1000),
-            new Server("localhost", 1, 1000, 1000),
-    };
+    public final static List<Server> servers;
 
     // Index is shard id
-    public final static int[][] shards = {
-            {},
-            {}
-    };
-
-    // Index is shard id
-    public final static int[][] shardServers;
+    public final static List<List<Integer>> shards = new LinkedList<>();
 
     static {
-        shardServers = new int[shards.length][];
+        List<Server> list = new LinkedList<Server>();
+
+        for (int i = 0; i < 5; i++) {
+            var l = new LinkedList<Integer>();
+            shards.add(l);
+            for (int j = 0; j < 3; j++) {
+                int serveridx = i * 5 + j;
+                list.add(new Server("localhost", i, 5000 + serveridx, 6000 + serveridx));
+                cities.add("city" + (serveridx + 1));
+                l.add(serveridx);
+            }
+        }
+        servers = list;
+    }
+
+
+    public static List<City> getShardCities(java.util.UUID id) {
+        int idx = (int) id.getLeastSignificantBits();
+        var shrd = shards.get(idx);
+        List<City> ret = new ArrayList<>(shrd.size());
+
+        for (var city : shrd) {
+            ret.add(City.newBuilder()
+                    .setName(cities.get(city))
+                    .setId(UUID.toID(UUID.generate()))
+                    .build());
+        }
+
+        return ret;
     }
 
 }

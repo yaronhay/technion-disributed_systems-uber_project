@@ -5,7 +5,9 @@ import server.ShardServer;
 import utils.Host;
 import zookeeper.ZKConnection;
 
+import java.awt.*;
 import java.io.IOException;
+import java.util.Scanner;
 import java.util.UUID;
 
 
@@ -37,7 +39,7 @@ public class Main {
             System.exit(1);
         }
 
-        var shardServer = new ShardServer(zk, new UUID(0,1));
+        var shardServer = new ShardServer(zk, new UUID(0, (long) server.shard));
         boolean stat = false;
         try {
             stat = shardServer.initialize(server);
@@ -54,16 +56,19 @@ public class Main {
     public static void main(String[] args) {
 
         int server_i = -1;
-        try {
+       /* try {
             server_i = Integer.parseInt(args[0]);
         } catch (NumberFormatException e) {
             log.error("Invalid server idx", e);
             System.exit(1);
-        }
+        }*/
+        var in = new Scanner(System.in);
+        System.out.println("Insert ID: ");
+        server_i =in.nextInt();
 
         CONFIG.Server server = null;
         try {
-            server = CONFIG.servers[server_i];
+            server = CONFIG.servers.get(server_i);
         } catch (ArrayIndexOutOfBoundsException e) {
             log.error("Invalid server idx", e);
             System.exit(1);
