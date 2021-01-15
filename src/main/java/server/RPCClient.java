@@ -4,8 +4,8 @@ import io.grpc.Channel;
 import io.grpc.ManagedChannelBuilder;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import uber.proto.rpc.ShardCommunicationGrpc;
 import uber.proto.rpc.UberRideServiceGrpc;
-import uber.proto.rpc.UberShardCommunicationGrpc;
 import utils.Host;
 
 import java.net.UnknownHostException;
@@ -21,7 +21,7 @@ public class RPCClient {
 
     final Map<String, Channel> channels;
     final Map<UUID, UberRideServiceGrpc.UberRideServiceBlockingStub> serversRPCStubs;
-    final Map<UUID, UberShardCommunicationGrpc.UberShardCommunicationStub> shardRPCStubs;
+    final Map<UUID, ShardCommunicationGrpc.ShardCommunicationStub> shardRPCStubs;
 
     public RPCClient(ShardServer server) {
         this.server = server;
@@ -31,11 +31,20 @@ public class RPCClient {
     }
 
     public UberRideServiceGrpc.UberRideServiceBlockingStub getServerStub(UUID shardID, UUID serverID) {
+        System.out.println(shardID + ";;;" + serverID);
         Function<UUID, UberRideServiceGrpc.UberRideServiceBlockingStub> creator = id -> {
-            var server = RPCClient.this
-                    .server.shardsServers.get(shardID).get(serverID);
+            var shard = RPCClient.this
+                    .server
+                    .shardsServers
+                    .get(shardID);
+            if (shard == null) {
+                log.error("Shard with id {} was not found", shardID);
+                return null;
+            }
+
+            var server = shard.get(serverID);
             if (server == null) {
-                log.error("Server with id {} was not found", serverID.toString());
+                log.error("Server with id {} was not found", serverID);
                 return null;
             }
 
@@ -45,8 +54,9 @@ public class RPCClient {
         };
         return serversRPCStubs.computeIfAbsent(serverID, creator);
     }
-    public UberShardCommunicationGrpc.UberShardCommunicationStub getShardServerStub(UUID serverID) {
-        Function<UUID, UberShardCommunicationGrpc.UberShardCommunicationStub> creator = id -> {
+
+    public ShardCommunicationGrpc.ShardCommunicationStub getShardServerStub(UUID serverID) {
+        Function<UUID, ShardCommunicationGrpc.ShardCommunicationStub> creator = id -> {
             var server = RPCClient.this
                     .server.shardsServers.get(this.server.shard).get(serverID);
             if (server == null) {
@@ -56,7 +66,7 @@ public class RPCClient {
 
             Channel channel = getChannel(server);
             if (channel == null) return null;
-            return UberShardCommunicationGrpc.newStub(channel);
+            return ShardCommunicationGrpc.newStub(channel);
         };
         return shardRPCStubs.computeIfAbsent(serverID, creator);
     }

@@ -17,7 +17,7 @@ import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-
+// https://medium.com/consulner/framework-less-rest-api-in-java-dd22d4d642fa
 public class RESTController {
     static final Logger log = LogManager.getLogger();
 
@@ -66,7 +66,6 @@ public class RESTController {
 
                 var requestBytes = exchange.getRequestBody().readAllBytes();
                 var requestString = new String(requestBytes);
-                System.out.println(requestString);
                 return new JSONObject(requestString);
 
             } catch (JSONException e) {
@@ -104,7 +103,7 @@ public class RESTController {
             } catch (IllegalAccessException | InvocationTargetException e) {
                 e.printStackTrace();
             }
-            respond(resp.httpCode, resp.body.toString());
+            respond(resp.httpCode, resp.body.toString(2));
         }
 
     }

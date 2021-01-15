@@ -20,7 +20,7 @@ public class Main {
         log.info("Connecting ZooKeeper Servers with host list: {}", Host.hostList(hosts));
 
         ZKConnection zk = new ZKConnection(hosts);
-        zk.connectedSync();
+        // zk.connectedSync();
         return zk;
     }
 

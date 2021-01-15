@@ -2,7 +2,6 @@ syntax = "proto3";
 
 option java_multiple_files = true;
 option java_package = "uber.proto.objects";
-option java_outer_classname = "UberObjects";
 
 package uber.obj;
 
@@ -37,9 +36,7 @@ message Ride {
   float permittedDeviation = 7;
 }
 
-message RidePath {
-  ID id = 1;
-  User consumer = 2;
-  Date date = 3;
-  repeated City cities = 4;
+message Hop {
+  uber.obj.City src = 1;
+  uber.obj.City dst = 2;
 }

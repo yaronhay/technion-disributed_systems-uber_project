@@ -2,22 +2,16 @@ syntax = "proto3";
 
 option java_multiple_files = true;
 option java_package = "uber.proto.rpc";
-option java_outer_classname = "UberRPC";
 
 package uber.rpc;
 
 import "objects.proto";
 import "google/protobuf/empty.proto";
 
-service UberRideService {
 
-  // Add ride assuming it is invoked
-  // on a server in the correct shard
-  rpc addRide(uber.obj.Ride) returns (uber.obj.ID);
 
-}
-
-service UberShardCommunication {
+service ShardCommunication {
 
   rpc gossipRide(uber.obj.Ride) returns (google.protobuf.Empty);
+
 }

@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "uber.proto.rpc";
+
+package uber.rpc;
+
+import "objects.proto";
+
+
+service UberRideService {
+
+  // Add ride assuming it is invoked
+  // on a server in the correct shard
+  rpc addRide(uber.obj.Ride) returns (uber.obj.ID);
+
+
+  rpc planPath(PlanPathRequest) returns (PlanPathResponse);
+
+}
+
+// Add Ride
+message AddRideRequest {
+  uber.obj.Ride ride = 1;
+
+}
+
+message AddRideResponse {
+  uber.obj.ID id = 1;
+}
+
+
+// PlanPath
+message PlanPathRequest {
+  uber.obj.ID transactionID = 1;
+  uber.obj.User consumer = 2;
+  uber.obj.Date date = 3;
+  repeated uber.obj.Hop hops = 4;
+}
+
+message PlanPathResponse {
+  repeated uber.obj.Ride rides = 1;
+  bool success = 2;
+}

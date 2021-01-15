@@ -2,13 +2,12 @@ package server;
 
 import cfg.CONFIG;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.InvalidProtocolBufferException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
-import org.apache.zookeeper.Watcher;
 import uber.proto.objects.City;
+import uber.proto.objects.ID;
 import uber.proto.zk.Server;
 import uber.proto.zk.Shard;
 import zookeeper.ZK;
@@ -21,7 +20,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Function;
 
 public class ShardServer {
 
@@ -32,10 +30,12 @@ public class ShardServer {
 
     final UUID id;
     final UUID shard;
-    final Map<UUID, Map<UUID, Server>> shardsServers;
-    final Map<UUID, Map<UUID, String>> shardsCities;
-    final Map<UUID, UUID> cityShard;
-    final Map<String, UUID> cityName;
+
+    final Map<UUID, Map<UUID, Server>> shardsServers; // Shard-ID -> { Server-ID -> Server }
+    final Map<UUID, Map<UUID, String>> shardsCities;  // Shard-ID -> { City-ID -> City-Name }
+    final Map<UUID, UUID> cityShard;  // City-ID -> Shard-ID
+    final Map<String, UUID> cityID; // City-Name -> City-ID
+    final Map<UUID, String> cityName; // City-ID -> City-Name
 
     final ZKConnection zk;
     RPCServer rpcServer;
@@ -59,6 +59,7 @@ public class ShardServer {
 
 
         cityShard = new ConcurrentHashMap<>();
+        cityID = new ConcurrentHashMap<>();
         cityName = new ConcurrentHashMap<>();
     }
 
@@ -179,5 +180,20 @@ public class ShardServer {
         return true;
     }
 
+    City getCityByName(String name) {
+        var id = this.cityID.get(name);
+        return City.newBuilder()
+                .setId(utils.UUID.toID(id))
+                .setName(name)
+                .build();
+    }
+    City getCityByID(ID id) {
+        var uuid = utils.UUID.fromID(id);
+        var name = this.cityName.get(uuid);
+        return City.newBuilder()
+                .setId(id)
+                .setName(name)
+                .build();
+    }
 
 }

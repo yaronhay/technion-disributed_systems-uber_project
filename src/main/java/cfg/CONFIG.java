@@ -60,7 +60,7 @@ public class CONFIG {
             var l = new LinkedList<Integer>();
             shards.add(l);
             for (int j = 0; j < 3; j++) {
-                int serveridx = i * 5 + j;
+                int serveridx = i * 3 + j;
                 list.add(new Server("localhost", i, 5000 + serveridx, 6000 + serveridx));
                 cities.add("city" + (serveridx + 1));
                 l.add(serveridx);

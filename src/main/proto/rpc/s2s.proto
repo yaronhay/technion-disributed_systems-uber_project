@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "uber.proto.rpc";
+
+package uber.rpc;
+
+import "objects.proto";
+
+
+service ServerCommunication {
+  rpc offerRides(OfferRidesRequest) returns (stream OfferRidesResponse);
+}
+
+message OfferRidesRequest {
+  uber.obj.ID transactionID = 1;
+  uber.obj.Date date = 2;
+  repeated uber.obj.Hop hops = 3;
+}
+
+message OfferRidesResponse {
+  message RideOffer {
+    uber.obj.ID rideID = 1;
+    uber.obj.Hop hop = 2;
+  }
+  repeated RideOffer offers = 1;
+
+}

@@ -3,7 +3,6 @@ package server;
 import com.google.protobuf.InvalidProtocolBufferException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
@@ -52,7 +51,8 @@ public class ServersWatcher {
                 var name = city.getName();
                 cities.put(id, name);
                 server.cityShard.putIfAbsent(id, shardID);
-                server.cityName.putIfAbsent(name, id);
+                server.cityID.putIfAbsent(name, id);
+                server.cityName.putIfAbsent(id, name);
                 log.info("Added City {} ({}) to shard {}",
                         name, id.toString(), shardID.toString());
             }
@@ -159,14 +159,17 @@ public class ServersWatcher {
                 e.printStackTrace();
                 log.error("Server (ProtocolBuf object) failed to parse, shouldn't happen", e);
             }
-            log.info("Added new server {} to shard, at {}:{}(grpc),{}(rest)",
-                    id, s.getHost(), s.getPorts().getGrpc(), s.getPorts().getRest());
+            log.info("Added new server {} to shard {}, at {}:{}(grpc),{}(rest)",
+                    id, shardID.toString(), s.getHost(), s.getPorts().getGrpc(), s.getPorts().getRest());
             return s;
         };
 
 
         var shard = server.shardsServers
-                .computeIfAbsent(shardID, k -> new ConcurrentHashMap<>())
+                .computeIfAbsent(shardID, k -> {
+                    log.info("Adding new shard {}", k);
+                    return new ConcurrentHashMap<>();
+                })
                 .computeIfAbsent(id, computer);
 
     }

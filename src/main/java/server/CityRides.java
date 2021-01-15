@@ -13,24 +13,28 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class CityRides {
     private Map<UUID, List<User>> reservations;
-    private Map<Date, Ride> schedule;
-
-    private final Object lock;
+    private Map<String, UUID> schedule;
+    private Map<UUID, Ride> rides;
 
     private UUID city;
 
     public CityRides() {
         this.reservations = new ConcurrentHashMap<>();
         this.schedule = new ConcurrentHashMap<>();
-        this.lock = new Object();
+        this.rides = new ConcurrentHashMap<>();
     }
 
+    static String fromDate(Date date) {
+        return String.format("%02d/%02d/%04d", date.getDay(), date.getMonth(), date.getYear());
+    }
 
     public void addRide(UUID rideID, Ride ride) {
-        synchronized (this.lock) {
-            this.schedule.putIfAbsent(ride.getDate(), ride); // Todo tostring
-            reservations.putIfAbsent(rideID, new ArrayList<>(ride.getVacancies()));
-        }
+        var dateKey = fromDate(ride.getDate());
+        this.rides.putIfAbsent(rideID, ride);
+        this.schedule.putIfAbsent(dateKey, rideID);
     }
 
+    public boolean hasRide(UUID rideID) {
+        return this.rides.containsKey(rideID);
+    }
 }
