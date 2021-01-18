@@ -16,10 +16,9 @@ import zookeeper.ZKPath;
 
 
 import java.io.IOException;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 
 public class ShardServer {
 
@@ -36,6 +35,7 @@ public class ShardServer {
     final Map<UUID, UUID> cityShard;  // City-ID -> Shard-ID
     final Map<String, UUID> cityID; // City-Name -> City-ID
     final Map<UUID, String> cityName; // City-ID -> City-Name
+    final Map<UUID, City.Location> cityLoc; // City-ID -> City-Name
 
     final ZKConnection zk;
     RPCServer rpcServer;
@@ -44,9 +44,14 @@ public class ShardServer {
 
     final ShardData data;
 
+    final Executor executor;
 
-    public ShardServer(ZKConnection zkCon, UUID shardID) {
+    final ZKPath shardRoot;
+
+    public ShardServer(ZKConnection zkCon, UUID shardID, Executor executor) {
+        this.executor = executor;
         this.id = utils.UUID.generate();
+        log.info("\nThis server \nID : {} \nShard ID {}", this.id, shardID);
         this.shard = shardID;
         shardsServers = new ConcurrentHashMap<>();
         shardsCities = new ConcurrentHashMap<>();
@@ -55,12 +60,15 @@ public class ShardServer {
 
         this.zk = zkCon;
 
-        this.data = new ShardData();
+        this.data = new ShardData(this);
 
 
         cityShard = new ConcurrentHashMap<>();
         cityID = new ConcurrentHashMap<>();
         cityName = new ConcurrentHashMap<>();
+        cityLoc = new ConcurrentHashMap<>();
+
+        shardRoot = ZK.Path("shards", shardID.toString());
     }
 
     public Map<UUID, Server> serversInShard() {
@@ -94,6 +102,27 @@ public class ShardServer {
             }
         }
 
+        try {
+            var locks = path.append("locks");
+            this.zk.createNode(locks,
+                    CreateMode.PERSISTENT);
+            log.info("Shard {}/locks znode was created", this.shard.toString());
+        } catch (KeeperException e) {
+            if (e.code() != KeeperException.Code.NODEEXISTS) {
+                throw e;
+            }
+        }
+
+        try {
+            var locks = path.append("queue");
+            this.zk.createNode(locks,
+                    CreateMode.PERSISTENT);
+            log.info("Shard {}/queue znode was created", this.shard.toString());
+        } catch (KeeperException e) {
+            if (e.code() != KeeperException.Code.NODEEXISTS) {
+                throw e;
+            }
+        }
 
         return path;
     }
@@ -138,13 +167,13 @@ public class ShardServer {
 
 
     public boolean initGRPCServer(int port) {
-        this.rpcServer = new RPCServer(port, this);
+        this.rpcServer = new RPCServer(port, this, executor);
 
         if (!this.rpcServer.start()) {
             return false;
         }
 
-        this.rpcClient = new RPCClient(this);
+        this.rpcClient = new RPCClient(this, executor);
         return true;
     }
 
@@ -194,6 +223,39 @@ public class ShardServer {
                 .setId(id)
                 .setName(name)
                 .build();
+    }
+
+
+    boolean tryLockSeat(UUID ride_id, int seat_no) throws InterruptedException, KeeperException {
+        var lock = this.shardRoot.append("locks", String.format("%s_%d", ride_id, seat_no));
+
+        try {
+            this.zk.createNode(lock, CreateMode.PERSISTENT);
+            log.debug("Lock for seat {} of ride {} is created", seat_no, ride_id);
+        } catch (KeeperException e) {
+            if (e.code() != KeeperException.Code.NODEEXISTS) {
+                throw e;
+            }
+        }
+
+
+        var mylockpath = lock.append("lock_");
+        mylockpath = this.zk.createNode(mylockpath, CreateMode.EPHEMERAL_SEQUENTIAL);
+        var mylock = mylockpath.get(mylockpath.length() - 1);
+        log.debug("Lock for seat {} of ride {} is created", seat_no, ride_id);
+
+        var children = this.zk.getChildrenStr(lock);
+        var min = Collections.min(children);
+
+        if (min.equals(mylock)) {
+            log.debug("Has lock for seat {} of ride {} is created", seat_no, ride_id);
+            // Has lock :)
+            return true;
+        } else {
+            // Release lock
+            this.zk.delete(mylockpath);
+            return false;
+        }
     }
 
 }

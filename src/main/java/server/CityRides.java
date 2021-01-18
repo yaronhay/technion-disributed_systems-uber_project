@@ -1,40 +1,197 @@
 package server;
 
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.apache.zookeeper.KeeperException;
+import uber.proto.objects.*;
 import uber.proto.objects.Date;
-import uber.proto.objects.Ride;
-import uber.proto.objects.User;
+import utils.Utils;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class CityRides {
+    final static Logger log = LogManager.getLogger();
+
     private Map<UUID, List<User>> reservations;
-    private Map<String, UUID> schedule;
+    private Map<String, List<UUID>> schedule;
     private Map<UUID, Ride> rides;
 
-    private UUID city;
+    final ShardServer server;
 
-    public CityRides() {
+    List<User> getReservations(UUID rideID, int minSize) {
+        var l = reservations.computeIfAbsent(rideID,
+                id -> Collections.synchronizedList(new LinkedList<User>()));
+        if (minSize > 0) {
+            synchronized (l) {
+                while (l.size() < minSize) {
+                    l.add(null);
+                }
+            }
+        }
+        return l;
+    }
+
+    List<UUID> getSchedule(String date) {
+        return schedule.computeIfAbsent(date,
+                id -> Collections.synchronizedList(new LinkedList<UUID>()));
+    }
+
+    public CityRides(ShardServer server) {
         this.reservations = new ConcurrentHashMap<>();
         this.schedule = new ConcurrentHashMap<>();
         this.rides = new ConcurrentHashMap<>();
-    }
-
-    static String fromDate(Date date) {
-        return String.format("%02d/%02d/%04d", date.getDay(), date.getMonth(), date.getYear());
+        this.server = server;
     }
 
     public void addRide(UUID rideID, Ride ride) {
-        var dateKey = fromDate(ride.getDate());
+        var dateKey = Utils.dateAsStr(ride.getDate());
         this.rides.putIfAbsent(rideID, ride);
-        this.schedule.putIfAbsent(dateKey, rideID);
+        this.getSchedule(dateKey).add(rideID);
     }
 
     public boolean hasRide(UUID rideID) {
         return this.rides.containsKey(rideID);
+    }
+
+    class RideTestInfo {
+        public String s1, s2;
+    }
+    public boolean offerRides(Date date, List<Hop> hops, UUID[] offers, int[] seats, UUID transactionID) {
+        List<Integer> emptyHops = new LinkedList<>();
+        for (int i = 0; i < offers.length; i++) {
+            if (offers[i] == null) {
+                emptyHops.add(i);
+            }
+        }
+
+        String dateKey = Utils.dateAsStr(date);
+        var schedule = this.getSchedule(dateKey);
+        synchronized (schedule) {
+            var it = schedule.iterator();
+
+            while (it.hasNext() && !emptyHops.isEmpty()) {
+                var rideID = it.next();
+                var ride = this.rides.get(rideID);
+
+                Integer remove = null;
+                for (var emptyHopIdx : emptyHops) {
+                    var emptyHop = hops.get(emptyHopIdx);
+
+                    var info = new RideTestInfo();
+                    if (goodOffer(ride, emptyHop, info)) {
+                        var seat = getEmptySeat(rideID, ride, info);
+
+                        if (seat != 0) {
+                            boolean locked;
+                            try {
+                                locked = this.server.tryLockSeat(rideID, seat);
+                            } catch (KeeperException | InterruptedException e) {
+                                log.error("Exception when trying to lock {}_{}", rideID, seat, e);
+                                locked = false;
+                            }
+                            if (locked) {
+                                offers[emptyHopIdx] = rideID;
+                                seats[emptyHopIdx] = seat;
+                                remove = emptyHopIdx;
+                                log.debug("Checking ride (Transaction ID {})\n\t{}\n\t{}\n\tLocked!",
+                                        transactionID, info.s1, info.s2);
+                                break;
+                            } else {
+                                log.debug("Checking ride (Transaction ID {})\n\t{}\n\t{}\n\tFailed to lock",
+                                        transactionID, info.s1, info.s2);
+                            }
+                        }
+                    }
+                    log.debug("Checking ride (Transaction ID {})\n\t{}\n\t{}",
+                            transactionID, info.s1, info.s2);
+                }
+
+                if (remove != null) {
+                    emptyHops.remove(remove);
+                }
+            }
+        }
+
+        return emptyHops.isEmpty();
+    }
+
+    int getEmptySeat(UUID rideID, Ride ride, RideTestInfo info) {
+        var lst = getReservations(rideID, ride.getVacancies());
+        int seat = 0;
+        synchronized (lst) {
+            int i = 0;
+            for (User user : lst) {
+                i++;
+                if (user == null) {
+                    seat = i;
+
+                    break;
+                }
+            }
+        }
+        var rideSrc = utils.UUID.fromID(ride.getSource().getId());
+        var rideDst = utils.UUID.fromID(ride.getDestination().getId());
+        if (seat != -1) {
+            info.s2 = String.format("Found an empty - seat no. %d in ride %s -> %s",
+                    seat, server.cityName.get(rideSrc), server.cityName.get(rideDst)
+            );
+        } else {
+            info.s2 = String.format("Didn't find an empty - seat no. %d in ride %s -> %s",
+                    seat, server.cityName.get(rideSrc), server.cityName.get(rideDst)
+            );
+        }
+        return seat;
+    }
+
+    boolean goodOffer(Ride ride, Hop hop, RideTestInfo info) {
+        var hopSrc = utils.UUID.fromID(hop.getSrc().getId());
+        var hopDst = utils.UUID.fromID(hop.getDst().getId());
+
+        var rideSrc = utils.UUID.fromID(ride.getSource().getId());
+        var rideDst = utils.UUID.fromID(ride.getDestination().getId());
+
+        var rideSrcLoc = server.cityLoc.get(rideSrc);
+        var rideDstLoc = server.cityLoc.get(rideDst);
+
+        if (hopSrc.equals(rideSrc) || hopDst.equals(rideDst)) {
+            City.Location point;
+            if (hopSrc.equals(rideSrc)) {
+                point = server.cityLoc.get(hopDst);
+
+            } else {
+                point = server.cityLoc.get(hopSrc);
+            }
+
+            var distance = utils.Utils.distancePointSegment(
+                    rideSrcLoc.getX(), rideSrcLoc.getY(),
+                    rideDstLoc.getX(), rideDstLoc.getY(),
+                    point.getX(), point.getY()
+            );
+
+
+            var answer = distance <= ride.getPermittedDeviation();
+            if (answer) {
+                info.s1 = String.format(
+                        "Found a good offer %s -> %s (PD = %f) for hop %s -> %s Distance of %f from line segment",
+                        server.cityName.get(rideSrc), server.cityName.get(rideDst), ride.getPermittedDeviation(),
+                        server.cityName.get(hopSrc), server.cityName.get(hopDst), distance
+                );
+            } else {
+                info.s1 = String.format(
+                        "Didn't find a good offer %s -> %s (PD = %f) for hop %s -> %s Distance of %f from line segment",
+                        server.cityName.get(rideSrc), server.cityName.get(rideDst), ride.getPermittedDeviation(),
+                        server.cityName.get(hopSrc), server.cityName.get(hopDst), distance
+                );
+            }
+            return answer;
+        }
+        info.s1 = String.format(
+                "Didn't find a good offer %s -> %s (PD = %f) for hop %s -> %s because no src / dst match",
+                server.cityName.get(rideSrc), server.cityName.get(rideDst), ride.getPermittedDeviation(),
+                server.cityName.get(hopSrc), server.cityName.get(hopDst)
+        );
+        return false;
     }
 }

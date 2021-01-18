@@ -68,6 +68,8 @@ public final class RESTServer extends utils.RESTController {
                     .setSource(source.build())
                     .setDestination(destination.build())
                     .setProvider(provider)
+                    .setPermittedDeviation(req.getFloat("permitted-deviation"))
+                    .setVacancies(req.getInt("vacancies"))
                     .build();
         } catch (org.json.JSONException e) {
             log.error("Error on parsing ride JSON format", e);
@@ -88,7 +90,7 @@ public final class RESTServer extends utils.RESTController {
         var shardServers = shardServer.shardsServers.get(cityShard);
 
         var serverID = utils.Random.getRandomKey(shardServers);
-        var stub = shardServer.rpcClient.getServerStub(cityShard, serverID);
+        var stub = shardServer.rpcClient.getServiceServerStub(cityShard, serverID);
 
         log.info("Submitting a new ride to server {} in shard {} with:\n{}", serverID, cityShard, req.toString(2));
         var res = stub.addRide(ride); // Todo failure
@@ -172,17 +174,17 @@ public final class RESTServer extends utils.RESTController {
         }
         log.info("Trying to plan a new ride path (Transaction id {}):\n{}", transactionID, req.toString(2));
 
-        var stub = shardServer.rpcClient.getServerStub(
+        var stub = shardServer.rpcClient.getServiceServerStub(
                 shardServer.shard, shardServer.id);
 
         var plan = stub.planPath(path);
 
         if (plan.getSuccess()) {
-            var rides = toJSON(plan.getRidesList());
+            // var rides = toJSON(plan.getRidesList());
             resp.httpCode = 200;
             resp.body.put("result", "success");
             resp.body.put("system-transaction-id", transactionID.toString());
-            resp.body.put("rides", rides);
+            resp.body.put("rides", "rides");
             log.info("Path planning was successful (Transaction id {})", transactionID);
         } else {
             resp.httpCode = 500;

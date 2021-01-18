@@ -6,17 +6,20 @@ import org.apache.logging.log4j.Logger;
 import utils.ShutdownService;
 
 import java.io.IOException;
+import java.util.concurrent.Executor;
 
 public class RPCServer {
     static final Logger log = LogManager.getLogger();
 
     final io.grpc.Server rpcServer;
 
-    public RPCServer(int port, ShardServer shardServer) {
+    public RPCServer(int port, ShardServer shardServer, Executor executor) {
         this.rpcServer = ServerBuilder
                 .forPort(port)
+                // .executor(executor)
                 .addService(new RPCUberService(shardServer))
                 .addService(new RPCShardCommunicationService(shardServer))
+                .addService(new RPCServerCommunicationService(shardServer))
                 .build();
         log.info("Adding GRPC Server at port {}", port);
     }

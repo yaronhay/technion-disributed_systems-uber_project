@@ -9,6 +9,8 @@ import java.awt.*;
 import java.io.IOException;
 import java.util.Scanner;
 import java.util.UUID;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 
 
 public class Main {
@@ -25,6 +27,7 @@ public class Main {
     }
 
     public static void start(CONFIG.Server server) {
+        Executor executor = Executors.newCachedThreadPool();
         ZKConnection zk = null;
         try {
             zk = initZKConnection();
@@ -39,7 +42,7 @@ public class Main {
             System.exit(1);
         }
 
-        var shardServer = new ShardServer(zk, new UUID(0, (long) server.shard));
+        var shardServer = new ShardServer(zk, new UUID(0, (long) server.shard), executor);
         boolean stat = false;
         try {
             stat = shardServer.initialize(server);
@@ -64,7 +67,7 @@ public class Main {
         }*/
         var in = new Scanner(System.in);
         System.out.println("Insert ID: ");
-        server_i =in.nextInt();
+        server_i = in.nextInt();
 
         CONFIG.Server server = null;
         try {

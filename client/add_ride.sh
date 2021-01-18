@@ -2,14 +2,16 @@
 
 read -r -d '' req_body <<-EOF
 {
-  "day" :         13,
-  "month":        1,
-  "year" :        2021,
-  "source":      "city1",
-  "destination":  "city2",
-  "firstname" :   "Yaron",
-  "lastname":     "Hay",
-  "phonenumber":  "0123456789"
+  "day" :                 13,
+  "month":                1,
+  "year" :                2021,
+  "source":               "city4",
+  "destination":          "city3",
+  "firstname" :           "Yaron",
+  "lastname":             "Hay",
+  "phonenumber":          "0123456789",
+  "permitted-deviation":  1,
+  "vacancies":            1
 }
 EOF
 

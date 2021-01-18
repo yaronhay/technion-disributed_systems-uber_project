@@ -37,30 +37,36 @@ public class RPCShardCommunicationService extends ShardCommunicationGrpc.ShardCo
         log.info("Received ride gossip for ride {}", rideID);
         server.data.addRide(rideID, request);
 
-        IntStream.range(0, K).forEach(i -> {
-            var randomNodes = utils.Random.getRandomKeys(shard, L);
-            log.info("Starting gossip round {} for ride {} to {}", i, rideID, randomNodes);
+        ;
+        server.executor.execute(
+                () -> {
+                    log.info("Starting gossip for ride {}",  rideID);
+                    IntStream.range(0, K).forEach(i -> {
+                        var randomNodes = utils.Random.getRandomKeys(shard, L);
 
-            var latch = new CountDownLatch(randomNodes.size());
-            var streamObserverFactory
-                    = rideGossipCallStreamObserver(rideID, i + 1, latch);
-            for (var nodeID : randomNodes) {
-                var node = server
-                        .rpcClient.getShardServerStub(nodeID);
-                log.debug("Gossiping ride (iteration {}) {} with {}", i, rideID, nodeID);
 
-                Context.current().fork().run(
-                        () -> node.gossipRide(request, streamObserverFactory.apply(nodeID))
-                );
-            }
+                        var latch = new CountDownLatch(randomNodes.size());
+                        var streamObserverFactory
+                                = rideGossipCallStreamObserver(rideID, i + 1, latch);
+                        for (var nodeID : randomNodes) {
+                            var node = server
+                                    .rpcClient.getShardServerStub(nodeID);
+                            // log.debug("Gossiping ride (iteration {}) {} with {}", i, rideID, nodeID);
 
-            Utils.sleep(DELTA);
-            try {
-                latch.await();
-            } catch (InterruptedException e) { }
-            log.info("Finished gossip round {} for ride {} to {}", i, rideID, randomNodes);
+                            Context.current().fork().run(
+                                    () -> node.gossipRide(request, streamObserverFactory.apply(nodeID))
+                            );
+                        }
 
-        });
+                        Utils.sleep(DELTA);
+                        try {
+                            latch.await();
+                        } catch (InterruptedException e) { }
+
+                    });
+                    log.info("Finished gossip for ride {}",  rideID);
+                }
+        );
     }
 
     private Function<UUID, StreamObserver<Empty>> rideGossipCallStreamObserver(UUID rideID, int i, CountDownLatch latch) {
@@ -72,14 +78,14 @@ public class RPCShardCommunicationService extends ShardCommunicationGrpc.ShardCo
                 }
             }
             @Override public void onNext(Empty empty) {
-                log.debug("Gossiping ride (iteration {}) {} with {} completed", i, rideID, nodeID);
+              //  log.debug("Gossiping ride (iteration {}) {} with {} completed", i, rideID, nodeID);
             }
             @Override public void onError(Throwable throwable) {
                 log.error("Gossiping ride (iteration {}) {} with {} ended with an error : \n {}", i, rideID, nodeID, throwable);
                 this.countDown();
             }
             @Override public void onCompleted() {
-                log.debug("Gossiping ride (iteration {}) {} with {} completed", i, rideID, nodeID);
+              //  log.debug("Gossiping ride (iteration {}) {} with {} completed", i, rideID, nodeID);
                 this.countDown();
             }
         };
@@ -87,7 +93,7 @@ public class RPCShardCommunicationService extends ShardCommunicationGrpc.ShardCo
 
     @Override public void gossipRide(Ride request, StreamObserver<Empty> responseObserver) {
         UUID rideID = utils.UUID.fromID(request.getId());
-        log.debug("Received ride gossip for ride {} from {}", rideID, "?");
+        // log.debug("Received ride gossip for ride {} from {}", rideID, "?");
 
         var seen = receivedRides.putIfAbsent(rideID, true) != null;
         if (!seen) {

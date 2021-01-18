@@ -10,10 +10,8 @@ read -r -d '' req_body <<-EOF
   "phonenumber":  "0123456789",
   "cities":       [
                     "city1",
-                    "city2",
-                    "city4",
-                    "city3",
                     "city5",
+                    "city3"
                   ]
 }
 EOF

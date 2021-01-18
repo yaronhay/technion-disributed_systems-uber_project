@@ -9,7 +9,11 @@ import "objects.proto";
 
 
 service ServerCommunication {
-  rpc offerRides(OfferRidesRequest) returns (stream OfferRidesResponse);
+  rpc offerRides(OfferRidesRequest) returns (OfferRidesResponse);
+
+  rpc releaseSeats(ReleaseSeatsRequest) returns (ReleaseSeatsResponse);
+
+  rpc tryReserveSeats(ReserveSeatsRequest) returns (ReserveSeatsResponse);
 }
 
 message OfferRidesRequest {
@@ -21,8 +25,37 @@ message OfferRidesRequest {
 message OfferRidesResponse {
   message RideOffer {
     uber.obj.ID rideID = 1;
-    uber.obj.Hop hop = 2;
+    int32 seat = 4;
+    uber.obj.City source = 2;
+    uber.obj.City destination = 3;
   }
-  repeated RideOffer offers = 1;
+  map<uint32, RideOffer> offers = 1;
+}
 
+message ReleaseSeatsRequest {
+  message Seat {
+    uber.obj.ID rideID = 1;
+    int32 seat = 4;
+  }
+
+  repeated Seat seats = 1;
+}
+
+message ReleaseSeatsResponse {
+
+}
+
+message ReserveSeatsRequest {
+  uber.obj.ID transactionID = 1;
+  uber.obj.User consumer = 2;
+  repeated uber.obj.ID rides = 3;
+}
+
+message ReserveSeatsResponse {
+  bool success = 1;
+  message Reservation {
+    uber.obj.Ride ride = 1;
+    uint32 seat = 2;
+  }
+  repeated Reservation reservations = 2;
 }

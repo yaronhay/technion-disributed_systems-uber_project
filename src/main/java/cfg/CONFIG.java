@@ -2,6 +2,7 @@ package cfg;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.javatuples.Pair;
 import uber.proto.objects.City;
 import uber.proto.objects.ID;
 import utils.Host;
@@ -45,6 +46,7 @@ public class CONFIG {
 
     // Index is city id
     public final static List<String> cities = new LinkedList<>();
+    public final static List<Pair<Integer, Integer>> citiesLocs = new LinkedList<>();
 
 
     // Index is server id
@@ -63,6 +65,7 @@ public class CONFIG {
                 int serveridx = i * 3 + j;
                 list.add(new Server("localhost", i, 5000 + serveridx, 6000 + serveridx));
                 cities.add("city" + (serveridx + 1));
+                citiesLocs.add(Pair.with(i, j));
                 l.add(serveridx);
             }
         }
@@ -76,8 +79,14 @@ public class CONFIG {
         List<City> ret = new ArrayList<>(shrd.size());
 
         for (var city : shrd) {
+            var loc = citiesLocs.get(city);
             ret.add(City.newBuilder()
                     .setName(cities.get(city))
+                    .setLocation(City.Location
+                            .newBuilder()
+                            .setX(loc.getValue0())
+                            .setY(loc.getValue1())
+                            .build())
                     .setId(UUID.toID(UUID.generate()))
                     .build());
         }

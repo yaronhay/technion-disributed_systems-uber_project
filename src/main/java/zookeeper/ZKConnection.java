@@ -80,7 +80,12 @@ public class ZKConnection {
     }
 
     public boolean nodeExists(ZKPath path) throws KeeperException, InterruptedException {
-        return this.zk.exists(path.str(), false) != null;
+        var b = this.zk.exists(path.str(), false);
+        var stat_str = b != null
+                ? String.format("Version %d Children %d Data Length %d", b.getVersion(), b.getNumChildren(), b.getDataLength())
+                : "Doesn't Exist";
+        log.debug("Exists Checking for path {}, Status : {}", path.str(), stat_str);
+        return b != null;
     }
 
     public ZKPath createRegularNode(ZKPath node) throws KeeperException, InterruptedException {
@@ -101,6 +106,7 @@ public class ZKConnection {
 
     public ZKPath createNode(ZKPath node, CreateMode mode, byte[] data) throws KeeperException, InterruptedException {
         var created = this.zk.create(node.str(), data, ALL_PERMISSIONS, mode);
+        log.debug("Created ZNode {} mode {}", node.str(), mode);
         return ZKPath.fromStr(created);
     }
 
@@ -109,23 +115,38 @@ public class ZKConnection {
     }
 
     public void addPersistentWatch(ZKPath path, Watcher w) throws KeeperException, InterruptedException {
-        this.zk.addWatch(path.str(), w, AddWatchMode.PERSISTENT);
+        var watchMode = AddWatchMode.PERSISTENT;
+        this.zk.addWatch(path.str(), w, watchMode);
+        log.debug("Added watch for Znode {} using {} mode", path.str(), watchMode);
     }
 
     public void addPersistentRecursiveWatch(ZKPath path, Watcher w) throws KeeperException, InterruptedException {
-        this.zk.addWatch(path.str(), w, AddWatchMode.PERSISTENT_RECURSIVE);
+        var watchMode = AddWatchMode.PERSISTENT_RECURSIVE;
+        this.zk.addWatch(path.str(), w, watchMode);
+        log.debug("Added watch for Znode {} using {} mode", path.str(), watchMode);
     }
 
     public byte[] getData(ZKPath node) throws KeeperException, InterruptedException {
-        return this.zk.getData(node.str(), false, null);
+        var data = this.zk.getData(node.str(), false, null);
+        log.debug("Got data for {} : {} bytes", node.str(), data.length);
+        return data;
+
     }
 
     public List<ZKPath> getChildren(ZKPath node) throws KeeperException, InterruptedException {
-        return this.zk
+        var children = this.zk
                 .getChildren(node.str(), false)
                 .stream()
                 .map(node::append)
                 .collect(Collectors.toList());
+        log.debug("Got {} children of {} : {}", children.size(), node.str(), children);
+        return children;
+    }
+    public List<String> getChildrenStr(ZKPath node) throws KeeperException, InterruptedException {
+        var children = this.zk
+                .getChildren(node.str(), false);
+        log.debug("Got {} children of {} : {}", children.size(), node.str(), children);
+        return children;
     }
 
     public void close() {
@@ -134,5 +155,9 @@ public class ZKConnection {
         } catch (InterruptedException e) {
             log.error("Interrupted exception upon ZK connection closing", e);
         }
+    }
+    public void delete(ZKPath node) throws KeeperException, InterruptedException {
+        this.zk.delete(node.str(), -1);
+        log.debug("Deleted Znode {}", node.str());
     }
 }

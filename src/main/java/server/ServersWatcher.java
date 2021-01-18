@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 public class ServersWatcher {
     static final Logger log = LogManager.getLogger();
@@ -53,8 +54,10 @@ public class ServersWatcher {
                 server.cityShard.putIfAbsent(id, shardID);
                 server.cityID.putIfAbsent(name, id);
                 server.cityName.putIfAbsent(id, name);
-                log.info("Added City {} ({}) to shard {}",
-                        name, id.toString(), shardID.toString());
+                var location = city.getLocation();
+                server.cityLoc.putIfAbsent(id, location);
+                log.info("Added City {} at location ({},{}) to shard {} ",
+                        name, location.getX(), location.getY(), shardID);
             }
             return cities;
         };
@@ -106,6 +109,24 @@ public class ServersWatcher {
             log.error("Error upon creating shard root ZNode", err);
         }
 
+        try {
+            final var pathCopy = path;
+            server.zk.addPersistentRecursiveWatch(path, event -> {
+                log.debug("Watch event for path {} : {}", pathCopy.str(), event);
+                if (event.getType() == Watcher.Event.EventType.NodeCreated) {
+                    var epath = ZKPath.fromStr(event.getPath());
+                    addServerToShardMembership(shardID, epath);
+                    logMembership(shardID);
+
+                } else if (event.getType() == Watcher.Event.EventType.NodeDeleted) {
+                    var epath = ZKPath.fromStr(event.getPath());
+                    removeServerFromShardMembership(shardID, epath);
+                    logMembership(shardID);
+                }
+            });
+        } catch (KeeperException | InterruptedException err) {
+            log.error("Exception when adding watch to shard " + shardID, err);
+        }
         List<ZKPath> children = null;
         try {
             children = server.zk.getChildren(path);
@@ -118,21 +139,7 @@ public class ServersWatcher {
         for (var child : children) {
             addServerToShardMembership(shardID, child);
         }
-
-        try {
-            server.zk.addPersistentRecursiveWatch(path, event -> {
-                if (event.getType() == Watcher.Event.EventType.NodeCreated) {
-                    var epath = ZKPath.fromStr(event.getPath());
-                    addServerToShardMembership(shardID, epath);
-
-                } else if (event.getType() == Watcher.Event.EventType.NodeDeleted) {
-                    var epath = ZKPath.fromStr(event.getPath());
-                    removeServerFromShardMembership(shardID, epath);
-                }
-            });
-        } catch (KeeperException | InterruptedException err) {
-            log.error("Exception when adding watch to shard " + shardID, err);
-        }
+        logMembership(shardID);
     }
     void addServerToShardMembership(UUID shardID, ZKPath path) {
         UUID id = UUID.fromString(path.get(path.length() - 1));
@@ -160,24 +167,40 @@ public class ServersWatcher {
                 log.error("Server (ProtocolBuf object) failed to parse, shouldn't happen", e);
             }
             log.info("Added new server {} to shard {}, at {}:{}(grpc),{}(rest)",
-                    id, shardID.toString(), s.getHost(), s.getPorts().getGrpc(), s.getPorts().getRest());
+                    id, shardID, s.getHost(), s.getPorts().getGrpc(), s.getPorts().getRest());
             return s;
         };
 
 
-        var shard = server.shardsServers
+        var shard = getShard(shardID);
+
+        shard.computeIfAbsent(id, computer);
+
+    }
+    private Map<UUID, Server> getShard(UUID shardID) {
+        return server.shardsServers
                 .computeIfAbsent(shardID, k -> {
                     log.info("Adding new shard {}", k);
                     return new ConcurrentHashMap<>();
-                })
-                .computeIfAbsent(id, computer);
-
+                });
+    }
+    private void logMembership(UUID shardID) {
+        var shard = getShard(shardID);
+        log.info("Updated membership of shard has {} servers #{} :\n\t{}",
+                shard.size(), shardID,
+                shard.keySet()
+                        .stream()
+                        .map(UUID::toString)
+                        .collect(Collectors.joining("\n\t"))
+        );
     }
 
     void removeServerFromShardMembership(UUID shardID, ZKPath path) {
         UUID serverID = UUID.fromString(path.get(path.length() - 1));
-        server.shardsServers.get(shardID).remove(serverID);
+        var shard = getShard(shardID);
+        shard.remove(serverID);
         log.info("Removed server {} from shard {}", serverID, shardID);
+
     }
 
 }
