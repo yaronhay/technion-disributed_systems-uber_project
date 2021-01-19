@@ -13,49 +13,43 @@ service ServerCommunication {
 
   rpc releaseSeats(ReleaseSeatsRequest) returns (ReleaseSeatsResponse);
 
-  rpc tryReserveSeats(ReserveSeatsRequest) returns (ReserveSeatsResponse);
+  rpc sendSnapshot(stream SnapshotRequest) returns (SnapshotResponse);
+
 }
+message RideOffer {
+  uber.obj.ID rideID = 1;
+  int32 seat = 4;
+  string lock = 5;
+  // uber.obj.City source = 2;
+  // uber.obj.City destination = 3;
+  uber.obj.Ride rideInfo = 6;
+}
+
 
 message OfferRidesRequest {
   uber.obj.ID transactionID = 1;
   uber.obj.Date date = 2;
   repeated uber.obj.Hop hops = 3;
-}
+  uber.obj.ID serverID = 4;
+  uber.obj.ID shardID = 5;
 
+}
 message OfferRidesResponse {
-  message RideOffer {
-    uber.obj.ID rideID = 1;
-    int32 seat = 4;
-    uber.obj.City source = 2;
-    uber.obj.City destination = 3;
-  }
   map<uint32, RideOffer> offers = 1;
 }
 
+
 message ReleaseSeatsRequest {
-  message Seat {
-    uber.obj.ID rideID = 1;
-    int32 seat = 4;
-  }
-
-  repeated Seat seats = 1;
+  uber.obj.ID transactionID = 2;
+  repeated RideOffer offers = 1;
 }
-
 message ReleaseSeatsResponse {
-
 }
 
-message ReserveSeatsRequest {
-  uber.obj.ID transactionID = 1;
-  uber.obj.User consumer = 2;
-  repeated uber.obj.ID rides = 3;
-}
 
-message ReserveSeatsResponse {
-  bool success = 1;
-  message Reservation {
-    uber.obj.Ride ride = 1;
-    uint32 seat = 2;
-  }
-  repeated Reservation reservations = 2;
+message SnapshotRequest {
+  uber.obj.ID snapshotID = 1;
+  uber.obj.RideStatus rideStatus = 2;
+}
+message SnapshotResponse {
 }

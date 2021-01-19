@@ -1,19 +1,21 @@
 package server;
 
 
+import io.grpc.StatusRuntimeException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import uber.proto.objects.*;
 import uber.proto.rpc.PlanPathRequest;
+import uber.proto.rpc.UberSnapshotRequest;
+import utils.JSONConverters;
 
 import java.io.IOException;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
 public final class RESTServer extends utils.RESTController {
     static final Logger log = LogManager.getLogger();
@@ -163,6 +165,7 @@ public final class RESTServer extends utils.RESTController {
         }
     }
 
+
     @RestAPI(Context = "/path", Method = "POST")
     public void planPath(JSONObject req, Response resp) {
         UUID transactionID = utils.UUID.generate();
@@ -180,11 +183,10 @@ public final class RESTServer extends utils.RESTController {
         var plan = stub.planPath(path);
 
         if (plan.getSuccess()) {
-            // var rides = toJSON(plan.getRidesList());
             resp.httpCode = 200;
             resp.body.put("result", "success");
             resp.body.put("system-transaction-id", transactionID.toString());
-            resp.body.put("rides", "rides");
+            resp.body.put("rides", JSONConverters.toJSON(plan.getRidesList()));
             log.info("Path planning was successful (Transaction id {})", transactionID);
         } else {
             resp.httpCode = 500;
@@ -194,37 +196,35 @@ public final class RESTServer extends utils.RESTController {
         }
     }
 
-    static JSONObject toJSON(List<Ride> ridesList) {
-        var arr = (new JSONArray())
-                .putAll(ridesList
-                        .stream()
-                        .map(ride -> (new JSONObject())
-                                .put("provider", toJSON(ride.getProvider()))
-                                .put("id", utils.UUID.fromID(ride.getId()).toString())
-                                .put("source", toJSON(ride.getSource()))
-                                .put("destination", toJSON(ride.getDestination()))
-                        ).collect(Collectors.toList())
-                );
-        return (new JSONObject())
-                .put("date", toJSON(ridesList.get(0).getDate()))
-                .put("rides", arr);
+    @RestAPI(Context = "/snapshot", Method = "GET", hasJSONRequest = false)
+    public void snapshot(JSONObject req, Response resp) {
+        JSONObject snapshot = new JSONObject();
+
+        log.info("Starting a new snapshot request");
+
+        try {
+            shardServer
+                    .rpcClient
+                    .getServiceServerStub(shardServer.shard, shardServer.id)
+                    .snapshot(UberSnapshotRequest.newBuilder().build())
+                    .forEachRemaining(snapshotResponse -> {
+                        var rideStatus = snapshotResponse.getRideStatus();
+                        var rideID = utils.UUID.fromID(rideStatus.getRide().getId());
+
+                        snapshot.put(rideID.toString(), JSONConverters.toJSON(rideStatus));
+                    });
+        } catch (StatusRuntimeException e) {
+            log.warn("Caught Status Runtime Exception");
+            resp.httpCode = 500;
+            resp.body.put("result", "failure");
+            log.info("Snapshot failed");
+            return;
+        }
+
+        resp.httpCode = 200;
+        resp.body.put("result", "success");
+        resp.body.put("snapshot", snapshot);
+        log.info("Snapshot sent");
     }
 
-    static JSONObject toJSON(User u) {
-        return (new JSONObject())
-                .put("firstname", u.getFirstName())
-                .put("lastname", u.getLastName())
-                .put("phonenumber", u.getPhoneNumber());
-    }
-
-    static JSONObject toJSON(Date d) {
-        return (new JSONObject())
-                .put("day", d.getDay())
-                .put("month", d.getMonth())
-                .put("year", d.getYear());
-    }
-
-    static JSONObject toJSON(City c) {
-        return (new JSONObject()).put("id", utils.UUID.fromID(c.getId()));
-    }
 }

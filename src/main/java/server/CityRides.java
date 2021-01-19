@@ -1,15 +1,20 @@
 package server;
 
 
+import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.zookeeper.KeeperException;
+import org.javatuples.Pair;
 import uber.proto.objects.*;
 import uber.proto.objects.Date;
+import uber.proto.rpc.SnapshotRequest;
 import utils.Utils;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 public class CityRides {
     final static Logger log = LogManager.getLogger();
@@ -49,16 +54,44 @@ public class CityRides {
         var dateKey = Utils.dateAsStr(ride.getDate());
         this.rides.putIfAbsent(rideID, ride);
         this.getSchedule(dateKey).add(rideID);
+        this.getReservations(rideID, ride.getVacancies());
     }
 
     public boolean hasRide(UUID rideID) {
         return this.rides.containsKey(rideID);
     }
 
+    public void addReservation(UUID rideID, int seat, User consumer) {
+        var reservation = getReservations(rideID, seat);
+        reservation.add(seat - 1, consumer);
+    }
+
+    public void sendSnapshot(StreamObserver<SnapshotRequest> streamObserver) {
+        for (var rideID : rides.keySet()) {
+            var ride = this.rides.get(rideID);
+
+            var reservations = getReservations(rideID, 0);
+            var reservationsMap = IntStream.range(0, reservations.size())
+                    .filter(i -> reservations.get(i) != null)
+                    .mapToObj(i -> Pair.with(i + 1, reservations.get(i)))
+                    .collect(Collectors.toMap(Pair::getValue0, Pair::getValue1));
+
+            var rideStatus = RideStatus
+                    .newBuilder()
+                    .setRide(ride)
+                    .putAllReservations(reservationsMap)
+                    .build();
+            streamObserver.onNext(SnapshotRequest
+                    .newBuilder()
+                    .setRideStatus(rideStatus)
+                    .build());
+        }
+    }
+
     class RideTestInfo {
         public String s1, s2;
     }
-    public boolean offerRides(Date date, List<Hop> hops, UUID[] offers, int[] seats, UUID transactionID) {
+    public boolean offerRides(Date date, List<Hop> hops, UUID[] offers, int[] seats, Ride[] rides, String[] locks, UUID transactionID, UUID shardID, UUID serverID) {
         List<Integer> emptyHops = new LinkedList<>();
         for (int i = 0; i < offers.length; i++) {
             if (offers[i] == null) {
@@ -85,15 +118,29 @@ public class CityRides {
 
                         if (seat != 0) {
                             boolean locked;
+                            String lock = null;
                             try {
-                                locked = this.server.tryLockSeat(rideID, seat);
+                                lock = this.server.tryLockSeat(rideID, seat);
+                                locked = lock != null;
                             } catch (KeeperException | InterruptedException e) {
                                 log.error("Exception when trying to lock {}_{}", rideID, seat, e);
                                 locked = false;
                             }
+
                             if (locked) {
+                                server.serversWatcher.addWatchRemoveGroup(serverID, transactionID);
+                                var finalLock = lock;
+                                server.serversWatcher.addWatchRemove(transactionID, () -> {
+                                    try {
+                                        server.releaseLockSeat(rideID, seat, finalLock);
+                                    } catch (InterruptedException | KeeperException e) {
+                                        log.error("Exception when trying to release lock {} on {}_{}", finalLock, rideID, seat, e);
+                                    }
+                                });
                                 offers[emptyHopIdx] = rideID;
                                 seats[emptyHopIdx] = seat;
+                                locks[emptyHopIdx] = lock;
+                                rides[emptyHopIdx] = ride;
                                 remove = emptyHopIdx;
                                 log.debug("Checking ride (Transaction ID {})\n\t{}\n\t{}\n\tLocked!",
                                         transactionID, info.s1, info.s2);

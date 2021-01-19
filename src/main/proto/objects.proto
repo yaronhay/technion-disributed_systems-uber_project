@@ -47,3 +47,8 @@ message Hop {
   uber.obj.City src = 1;
   uber.obj.City dst = 2;
 }
+
+message RideStatus {
+  uber.obj.Ride ride = 1;
+  map<int32, uber.obj.User> reservations = 2;
+}

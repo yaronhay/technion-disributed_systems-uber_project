@@ -13,7 +13,7 @@ import java.util.stream.Collectors;
 
 public class ZKConnection {
     static final Logger log = LogManager.getLogger();
-    final List<ACL> ALL_PERMISSIONS = ZooDefs.Ids.OPEN_ACL_UNSAFE;
+    static final List<ACL> ALL_PERMISSIONS = ZooDefs.Ids.OPEN_ACL_UNSAFE;
     final int sessionTimout = 5000;
     final ZooKeeper zk;
 
@@ -88,6 +88,10 @@ public class ZKConnection {
         return b != null;
     }
 
+    public void nodeExists(ZKPath path, BoolCallback callback) {
+        this.zk.exists(path.str(), false, new BoolCallback.Adapter(callback), null);
+    }
+
     public ZKPath createRegularNode(ZKPath node) throws KeeperException, InterruptedException {
 //        var mode = CreateMode.PERSISTENT;
 //        byte[] emptyData = {};
@@ -108,6 +112,14 @@ public class ZKConnection {
         var created = this.zk.create(node.str(), data, ALL_PERMISSIONS, mode);
         log.debug("Created ZNode {} mode {}", node.str(), mode);
         return ZKPath.fromStr(created);
+    }
+
+    public void createNode(ZKPath node, CreateMode mode, byte[] data, NodeCallback callback) {
+        this.zk.create(node.str(), data, ALL_PERMISSIONS, mode,
+                new NodeCallback.Adapter(callback), null);
+    }
+    public void createNode(ZKPath node, CreateMode mode, NodeCallback callback) {
+        this.createNode(node, mode, new byte[]{}, callback);
     }
 
     public ZKPath createNode(ZKPath node, CreateMode mode) throws KeeperException, InterruptedException {
@@ -142,11 +154,18 @@ public class ZKConnection {
         log.debug("Got {} children of {} : {}", children.size(), node.str(), children);
         return children;
     }
-    public List<String> getChildrenStr(ZKPath node) throws KeeperException, InterruptedException {
-        var children = this.zk
-                .getChildren(node.str(), false);
+    public List<String> getChildrenStr(ZKPath node, Watcher w) throws KeeperException, InterruptedException {
+        var children = this.zk.getChildren(node.str(), w);
         log.debug("Got {} children of {} : {}", children.size(), node.str(), children);
         return children;
+    }
+
+    public List<String> getChildrenStr(ZKPath node) throws KeeperException, InterruptedException {
+        return this.zk.getChildren(node.str(), null);
+    }
+
+    public void getChildrenStr(ZKPath node, ListCallback callback) {
+        this.zk.getChildren(node.str(), null, new ListCallback.Adapter(callback), null);
     }
 
     public void close() {
@@ -158,6 +177,51 @@ public class ZKConnection {
     }
     public void delete(ZKPath node) throws KeeperException, InterruptedException {
         this.zk.delete(node.str(), -1);
-        log.debug("Deleted Znode {}", node.str());
+        log.debug("Deleted ZNode {}", node.str());
     }
+
+    public void deleteSubTree(ZKPath node) throws KeeperException, InterruptedException {
+        while (!nodeExists(node)) {
+            try {
+                ZKUtil.deleteRecursive(this.zk, node.str());
+            } catch (KeeperException e) {
+                log.error("Keeper exception thrown when deleting node {} recursively:\n{}", node.str(), e);
+                if (e.code() == KeeperException.Code.NONODE) {
+                    log.warn("No Node Keeper Exception was thrown while deleting recursively: {}", e.getPath());
+                } else {
+                    throw e;
+                }
+            }
+        }
+        log.debug("Deleted ZNode {} recursively", node.str());
+    }
+
+    public void deleteSubTree(ZKPath node, VoidCallback callback) {
+        var r  = new Pointer<Runnable>();
+        r.val = () -> {
+            this.nodeExists(node, (rc, exists) -> {
+                try {
+                    ZKUtil.deleteRecursive(
+                            this.zk,
+                            node.str(),
+                            (rc1, strpath, ctx) -> log.debug("Deleted ZNode {} recursively", node.str()),
+                            null);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                } catch (KeeperException e) {
+                    log.error("Keeper exception thrown when deleting node {} recursively:\n{}", node.str(), e);
+                    if (e.code() == KeeperException.Code.NONODE) {
+                        log.warn("No Node Keeper Exception was thrown while deleting recursively: {}", e.getPath());
+                        r.val.run();
+                    }
+                }
+            });
+        };
+        r.val.run();
+    }
+
+    public List<OpResult> atomic(Iterable<Op> ops) throws KeeperException, InterruptedException {
+        return this.zk.multi(ops);
+    }
+
 }

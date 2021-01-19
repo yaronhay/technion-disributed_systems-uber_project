@@ -1,11 +1,19 @@
 package server;
 
 import com.google.protobuf.Empty;
+import com.google.rpc.Code;
+import com.google.rpc.Status;
+import io.grpc.Context;
+import io.grpc.protobuf.StatusProto;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.zookeeper.KeeperException;
+import org.javatuples.Pair;
 import uber.proto.objects.*;
 import uber.proto.rpc.*;
+import uber.proto.zk.SnapshotTask;
+import utils.AbortableCountDownLatch;
 
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
@@ -18,6 +26,7 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
     static final Logger log = LogManager.getLogger();
 
     private final ShardServer server;
+
 
     public RPCUberService(ShardServer server) {
         this.server = server;
@@ -55,24 +64,87 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
 
         log.debug("Received a path planning request (Transaction id {})", transactionUUID);
 
+        OfferRidesRequest offerRidesRequest = makeOfferRidesRequest(request, transactionID);
+        Map<UUID, UUID> servers = server.getRandomServersForAllShards();
+
+        OfferCollector offerCollector = new OfferCollector(
+                request.getHopsCount(),
+                servers.size(),
+                transactionID);
+
+        if (!getOffers(transactionUUID, offerRidesRequest, servers, offerCollector)) {
+            responseObserver.onNext(PlanPathResponse.newBuilder()
+                    .setSuccess(false)
+                    .build());
+            responseObserver.onCompleted();
+            return;
+        }
+
+        var success = this.server.atomicSeatsReserve(
+                offerCollector.offers,
+                request.getConsumer(),
+                transactionID);
+
+        var response = PlanPathResponse.newBuilder();
+        if (!success) {
+            log.debug("Atomic reservation of offers (Transaction ID {}) failed", transactionUUID);
+            response.setSuccess(false);
+            log.debug("The path planning (Transaction ID {}) with self failed", transactionUUID);
+        } else {
+            response.setSuccess(true);
+            for (var i = 0; i < offerCollector.offers.length(); i++) {
+                var offer = offerCollector.offers.get(i);
+                response.addRides(offer.rideOffer.getRideInfo());
+            }
+            log.debug("The path planning (Transaction ID {}) with self finished - returning result to caller", transactionUUID);
+        }
+
+        releaseLocks(transactionID, servers, offerCollector.getOffersSeatsToRelease());
+
+        responseObserver.onNext(response.build());
+        responseObserver.onCompleted();
+    }
+    private boolean getOffers(UUID transactionUUID,
+                              OfferRidesRequest offerRidesRequest,
+                              Map<UUID, UUID> servers,
+                              OfferCollector offerCollector) {
+        boolean offersOK = collectOffers(
+                transactionUUID,
+                offerRidesRequest,
+                servers,
+                offerCollector);
+
+        Map<UUID, ReleaseSeatsRequest> toRelease;
+        if (offersOK) {
+            log.info("Found (Transaction ID {}) a good offer collection of rides that satisfies the path : {} ",
+                    transactionUUID, offerCollector.offers);
+            toRelease = offerCollector.getExceedingSeatsToRelease();
+
+        } else {
+            log.info("Offers (Transaction ID {}) did not satisfy the path : {} ",
+                    transactionUUID, offerCollector.offers);
+            toRelease = offerCollector.getAllSeatsToRelease();
+        }
+
+        releaseLocks(utils.UUID.toID(transactionUUID), servers, toRelease);
+
+
+        return offersOK;
+    }
+    private OfferRidesRequest makeOfferRidesRequest(PlanPathRequest request, ID transactionID) {
         OfferRidesRequest offerRidesRequest = OfferRidesRequest.newBuilder()
                 .setDate(request.getDate())
                 .addAllHops(request.getHopsList())
                 .setTransactionID(transactionID)
+                .setServerID(utils.UUID.toID(this.server.id))
+                .setShardID(utils.UUID.toID(this.server.shard))
                 .build();
-
-
-        Map<UUID, UUID> servers = new HashMap<>();
-        for (var k : server.shardsServers.entrySet()) {
-            var shardID = k.getKey();
-            var serverID = utils.Random.getRandomKey(k.getValue());
-            servers.put(shardID, serverID);
-        }
-
-        OfferCollector offerCollector = new OfferCollector(request.getHopsCount(), servers.size());
+        return offerRidesRequest;
+    }
+    private boolean collectOffers(UUID transactionUUID, OfferRidesRequest offerRidesRequest, Map<UUID, UUID> servers, OfferCollector offerCollector) {
         for (var k : servers.entrySet()) {
-            var shardID = k.getKey();
-            var serverID = k.getValue();
+            var shardID = k.getValue();
+            var serverID = k.getKey();
 
             var stub = server.rpcClient.getServerStub(shardID, serverID);
             stub.offerRides(offerRidesRequest,
@@ -88,54 +160,31 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
                 break;
             }
         }
+        return offersOK;
+    }
 
-        Map<UUID, ReleaseSeatsRequest> toRelease;
-        if (offersOK) {
-            log.info("Found (Transaction ID {}) a good offer collection of rides that satisfies the path : {} ",
-                    transactionUUID, offerCollector.offers);
-            toRelease = offerCollector.getSeatsToRelease();
+    private void releaseLocks(ID transactionID, Map<UUID, UUID> servers, Map<UUID, ReleaseSeatsRequest> toRelease) {
+        for (var k : toRelease.entrySet()) {
+            var serverID = k.getKey();
+            var releaseSeatsRequest = k.getValue();
+            var shardID = servers.get(serverID);
 
-        } else {
-            log.info("Offers (Transaction ID {}) did not satisfy the path : {} ",
-                    transactionUUID, offerCollector.offers);
-            toRelease = offerCollector.getAllSeatsToRelease();
+
+            var stub = server.rpcClient.getServerStub(shardID, serverID);
+            StreamObserver<ReleaseSeatsResponse> releaseObserver = new StreamObserver<>() {
+                @Override public void onNext(ReleaseSeatsResponse releaseSeatsResponse) { }
+                @Override public void onError(Throwable throwable) {
+                    log.error("Release seats (Transaction ID {}) to server {} in shard {} ended with an error:\n{}",
+                            transactionID, server, shardID, throwable);
+                }
+                @Override public void onCompleted() {
+                    log.debug("Release seats (Transaction ID {}) to server {} in shard {} completed",
+                            transactionID, server, shardID);
+                }
+            };
+            Context.current().fork().run(
+                    () -> stub.releaseSeats(releaseSeatsRequest, releaseObserver));
         }
-        // Todo release
-        var response = PlanPathResponse.newBuilder();
-        if (!offersOK) {
-            response.setSuccess(false);
-            responseObserver.onNext(response.build());
-            responseObserver.onCompleted();
-            return;
-        }
-
-//        response.addAllRides(
-//                hops.stream().map(
-//                        hop -> Ride.newBuilder()
-//                                .setId(utils.UUID.toID(utils.UUID.generate()))
-//                                .setProvider(User.newBuilder()
-//                                        .setFirstName("Rab")
-//                                        .setLastName("hay")
-//                                        .setPhoneNumber("055").build())
-//                                .setDate(date)
-//                                .setSource(server.getCityByID(hop.getSrc().getId()))
-//                                .setDestination(server.getCityByID(hop.getDst().getId()))
-//                                .build()
-//
-//                ).collect(Collectors.toList())
-//        );
-
-        // Todo actual lock
-        var success = offersOK;
-        if (success) {
-            response.setSuccess(true);
-            log.debug("The path planning (Transaction ID {}) with self finished - returning result to caller", transactionUUID);
-        } else {
-            response.setSuccess(false);
-            log.debug("The path planning (Transaction ID {}) with self failed", transactionUUID);
-        }
-        responseObserver.onNext(response.build());
-        responseObserver.onCompleted();
     }
 
     class OfferCollector {
@@ -143,20 +192,22 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
             public ID id;
             public UUID shardID;
             public UUID serverID;
-            public int seat;
+            public RideOffer rideOffer;
             public String s;
             @Override public String toString() {
                 return String.format("Offer(%s, rideid%s, shard%s)", s, utils.UUID.fromID(id), shardID);
             }
         }
 
+        ID transactionID;
         final Object lock;
         //ID[] offers;
         final List<Offer> toRelease;
         AtomicReferenceArray<Offer> offers;
         //UUID[] shards;
         CountDownLatch latch;
-        OfferCollector(int n, int size) {
+        OfferCollector(int n, int size, ID transactionID) {
+            this.transactionID = transactionID;
             lock = new Object();
             //offers = new ID[n];
             //shards = new UUID[n];
@@ -165,67 +216,56 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
             toRelease = Collections.synchronizedList(new LinkedList<>());
         }
 
-        public Map<UUID, ReleaseSeatsRequest> getSeatsToRelease() {
-            Map<UUID, ReleaseSeatsRequest.Builder> res = new HashMap<>();
+        public Map<UUID, ReleaseSeatsRequest> getExceedingSeatsToRelease() {
+            Map<UUID, ReleaseSeatsRequest.Builder> res = getReleaseBuilderMap();
+            addExceedingSeatsToRelease(res);
+            return toReleaseSeatsRequestMap(res);
+        }
+        public Map<UUID, ReleaseSeatsRequest> getOffersSeatsToRelease() {
+            Map<UUID, ReleaseSeatsRequest.Builder> res = getReleaseBuilderMap();
+            addOfferToReleaseRequest(res);
+            return toReleaseSeatsRequestMap(res);
+        }
+        public Map<UUID, ReleaseSeatsRequest> getAllSeatsToRelease() {
+            Map<UUID, ReleaseSeatsRequest.Builder> res = getReleaseBuilderMap();
+            addExceedingSeatsToRelease(res);
+            addOfferToReleaseRequest(res);
+            return toReleaseSeatsRequestMap(res);
+        }
 
+
+        private Map<UUID, ReleaseSeatsRequest.Builder> getReleaseBuilderMap() {
+            return new HashMap<>();
+        }
+        private void addExceedingSeatsToRelease(Map<UUID, ReleaseSeatsRequest.Builder> res) {
             synchronized (toRelease) {
                 for (var offer : toRelease) {
                     var builder =
                             res.computeIfAbsent(offer.serverID, k -> ReleaseSeatsRequest.newBuilder());
-                    builder.addSeats(ReleaseSeatsRequest.Seat
-                            .newBuilder()
-                            .setRideID(offer.id)
-                            .setSeat(offer.seat)
-                            .build()
-                    );
+                    builder.addOffers(offer.rideOffer);
                 }
             }
+        }
+        private void addOfferToReleaseRequest(Map<UUID, ReleaseSeatsRequest.Builder> res) {
             for (var i = 0; i < offers.length(); i++) {
                 var offer = offers.get(i);
                 if (offer == null) {
                     var builder =
                             res.computeIfAbsent(offer.serverID, k -> ReleaseSeatsRequest.newBuilder());
-                    builder.addSeats(ReleaseSeatsRequest.Seat
-                            .newBuilder()
-                            .setRideID(offer.id)
-                            .setSeat(offer.seat)
-                            .build()
-                    );
+                    builder.addOffers(offer.rideOffer);
                 }
             }
-
+        }
+        private Map<UUID, ReleaseSeatsRequest> toReleaseSeatsRequestMap(Map<UUID, ReleaseSeatsRequest.Builder> res) {
             return res.entrySet().stream()
-                    .filter(e -> e.getValue().getSeatsCount() != 0)
-                    .map(e -> new AbstractMap.SimpleEntry<>(e.getKey(), e.getValue().build()))
-                    .collect(Collectors.toMap(
-                            Map.Entry::getKey,
-                            Map.Entry::getValue
-                    ));
+                    .filter(e -> e.getValue().getOffersCount() != 0)
+                    .map(e -> new AbstractMap.SimpleEntry<>(e.getKey(), e.getValue()
+                            .setTransactionID(transactionID)
+                            .build()))
+                    .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
         }
 
-        public Map<UUID, ReleaseSeatsRequest> getAllSeatsToRelease() {
-            Map<UUID, ReleaseSeatsRequest.Builder> res = new HashMap<>();
 
-            synchronized (toRelease) {
-                for (var offer : toRelease) {
-                    var builder =
-                            res.computeIfAbsent(offer.serverID, k -> ReleaseSeatsRequest.newBuilder());
-                    builder.addSeats(ReleaseSeatsRequest.Seat
-                            .newBuilder()
-                            .setRideID(offer.id)
-                            .setSeat(offer.seat)
-                            .build()
-                    );
-                }
-            }
-            return res.entrySet().stream()
-                    .filter(e -> e.getValue().getSeatsCount() != 0)
-                    .map(e -> new AbstractMap.SimpleEntry<>(e.getKey(), e.getValue().build()))
-                    .collect(Collectors.toMap(
-                            Map.Entry::getKey,
-                            Map.Entry::getValue
-                    ));
-        }
         StreamObserver<OfferRidesResponse> collector(UUID shardID, UUID serverID, UUID transactionID) {
             return new StreamObserver<>() {
                 final AtomicBoolean wasRun = new AtomicBoolean(false);
@@ -250,9 +290,10 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
                         offer.id = val.getRideID();
                         offer.shardID = shardID;
                         offer.serverID = serverID;
-                        offer.seat = val.getSeat();
-                        var src = server.getCityByID(val.getSource().getId()).getName();
-                        var dst = server.getCityByID(val.getDestination().getId()).getName();
+                        offer.rideOffer = val;
+
+                        var src = server.getCityByID(val.getRideInfo().getSource().getId()).getName();
+                        var dst = server.getCityByID(val.getRideInfo().getDestination().getId()).getName();
                         offer.s = String.format("%s->%s", src, dst);
 
                         if (!offers.compareAndSet(i, null, offer)) {
@@ -278,6 +319,58 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
+        }
+    }
+
+    public static class SnapshotInfo {
+        public AbortableCountDownLatch latch;
+        public StreamObserver<UberSnapshotResponse> streamObserver;
+    }
+    @Override public void snapshot(UberSnapshotRequest request, StreamObserver<UberSnapshotResponse> responseObserver) {
+        var snapshotUUID = utils.UUID.generate();
+
+        // Server ID, Shard ID
+        Map<UUID, UUID> servers = server.getRandomServersForAllShards();
+
+        AbortableCountDownLatch latch = new AbortableCountDownLatch(servers.size());
+        {
+            var snapshotInfo = new SnapshotInfo();
+            snapshotInfo.latch = latch;
+            snapshotInfo.streamObserver = responseObserver;
+
+            server.snapshotInfo.put(snapshotUUID, snapshotInfo);
+        }
+
+        if (!server.startSnapshotTask(snapshotUUID, servers)) {
+            synchronized (responseObserver) {
+                responseObserver.onNext(UberSnapshotResponse.newBuilder().build());
+                responseObserver.onCompleted();
+            }
+            return;
+        }
+
+        for (var serverID : servers.keySet()) {
+            server.serversWatcher.addWatchRemoveGroup(serverID, snapshotUUID);
+            server.serversWatcher.addWatchRemove(snapshotUUID, latch::abort);
+        }
+
+        try {
+            latch.await();
+        } catch (AbortableCountDownLatch.AbortedException e) {
+            Status status = Status.newBuilder()
+                    .setCode(Code.ABORTED_VALUE)
+                    .setMessage("Some server failed")
+                    .build();
+            synchronized (responseObserver) {
+                responseObserver.onError(StatusProto.toStatusRuntimeException(status));
+            }
+            return;
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        synchronized (responseObserver) {
+            responseObserver.onCompleted();
         }
     }
 }

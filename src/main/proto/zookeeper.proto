@@ -22,3 +22,42 @@ message Shard {
   bytes id = 1;
   repeated uber.obj.City cities = 2;
 }
+
+// Queue operations
+message ReserveTask {
+  uber.obj.ID rideID = 1;
+  int32 seat = 2;
+  uber.obj.User consumer = 3;
+  uber.obj.City source = 4;
+  // int64 rideVacancies = 4;
+}
+
+message InvalidSeatLockTask {
+  uber.obj.ID rideID = 1;
+  int32 seat = 2;
+}
+
+
+message SnapshotTask {
+  message ServerEndPoint {
+    uber.obj.ID shardID = 1;
+    uber.obj.ID serverID = 2;
+  }
+  uber.obj.ID snapshotID = 1;
+  ServerEndPoint sendTo = 2;
+  ServerEndPoint requestedServer = 3;
+}
+
+message Task {
+  oneof task {
+    ReserveTask reserve = 1;
+    InvalidSeatLockTask invalidSeatLock = 2;
+    SnapshotTask  snapshot = 3;
+  }
+}
+
+message TaskList {
+  repeated Task taskList = 1;
+}
+
+

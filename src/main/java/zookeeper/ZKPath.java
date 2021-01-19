@@ -166,6 +166,7 @@ public class ZKPath {
             var subpath = zkPath.prefix(i);
             System.out.println(subpath.str());
         }
+        System.out.println(zkPath.prefix(zkPath.length()-2).str());
 
     }
 

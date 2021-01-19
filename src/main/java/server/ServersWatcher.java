@@ -6,15 +6,15 @@ import org.apache.logging.log4j.Logger;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
+import uber.proto.objects.ID;
 import uber.proto.zk.Server;
 import uber.proto.zk.Shard;
 import zookeeper.ZK;
 import zookeeper.ZKPath;
 
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -23,8 +23,15 @@ public class ServersWatcher {
 
     final ShardServer server;
 
-    public ServersWatcher(ShardServer server) {
+    final Map<UUID, Map<UUID, Boolean>> watchRemove;
+    final Map<UUID, List<Runnable>> groupsWatchers;
+    final Executor executor;
+
+    public ServersWatcher(ShardServer server, Executor executor) {
         this.server = server;
+        watchRemove = new ConcurrentHashMap<>();
+        groupsWatchers = new ConcurrentHashMap<>();
+        this.executor = executor;
     }
 
     public void initialize() throws KeeperException, InterruptedException {
@@ -199,8 +206,52 @@ public class ServersWatcher {
         UUID serverID = UUID.fromString(path.get(path.length() - 1));
         var shard = getShard(shardID);
         shard.remove(serverID);
-        log.info("Removed server {} from shard {}", serverID, shardID);
 
+        Runnable onRemove = () -> {
+            var groups = getWatchRemoveServerList(serverID);
+            for (UUID group : groups.keySet()) {
+                var groupList = this.groupsWatchers.get(group);
+                if (groupList == null) continue;// Double checked locking
+
+                synchronized (groupList) {
+                    if (this.groupsWatchers.get(group) == null) continue; // Double checked locking
+                    for (Runnable runnable : groupList) {
+                        try {
+                            runnable.run();
+                        } catch (Exception e) {
+                            log.error("Exception when running remove watcher", e);
+                        }
+                    }
+                    removeWatchRemoveGroup(group);
+                }
+            }
+        };
+
+        executor.execute(onRemove);
+        log.info("Removed server {} from shard {}", serverID, shardID);
+    }
+
+    List<Runnable> getWatchRemoveGroup(UUID groupID) {
+        return this.groupsWatchers.computeIfAbsent(groupID,
+                k -> Collections.synchronizedList(new LinkedList<>()));
+    }
+
+    public List<Runnable> removeWatchRemoveGroup(UUID groupID) {
+        return this.groupsWatchers.remove(groupID);
+    }
+
+    Map<UUID, Boolean> getWatchRemoveServerList(UUID serverID) {
+        return this.watchRemove.computeIfAbsent(serverID,
+                k -> new ConcurrentHashMap<>());
+    }
+
+    public void addWatchRemoveGroup(UUID serverID, UUID groupID) {
+        var server = getWatchRemoveServerList(serverID);
+        server.put(groupID, true);
+    }
+    public void addWatchRemove(UUID groupID, Runnable onRemove) {
+        var group = getWatchRemoveGroup(groupID);
+        group.add(onRemove);
     }
 
 }

@@ -14,8 +14,9 @@ service UberRideService {
   // on a server in the correct shard
   rpc addRide(uber.obj.Ride) returns (uber.obj.ID);
 
-
   rpc planPath(PlanPathRequest) returns (PlanPathResponse);
+
+  rpc snapshot(UberSnapshotRequest) returns (stream UberSnapshotResponse);
 
 }
 
@@ -41,4 +42,11 @@ message PlanPathRequest {
 message PlanPathResponse {
   repeated uber.obj.Ride rides = 1;
   bool success = 2;
+}
+
+
+message UberSnapshotRequest {
+}
+message UberSnapshotResponse {
+  uber.obj.RideStatus rideStatus = 1;
 }

@@ -2,13 +2,18 @@ package server;
 
 import cfg.CONFIG;
 import com.google.protobuf.ByteString;
+import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
+import org.javatuples.Pair;
 import uber.proto.objects.City;
 import uber.proto.objects.ID;
-import uber.proto.zk.Server;
+import uber.proto.objects.User;
+import uber.proto.rpc.SnapshotRequest;
+import uber.proto.rpc.SnapshotResponse;
+import uber.proto.zk.*;
 import uber.proto.zk.Shard;
 import zookeeper.ZK;
 import zookeeper.ZKConnection;
@@ -19,13 +24,17 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicReferenceArray;
+import java.util.stream.Collectors;
 
 public class ShardServer {
 
     static final Logger log = LogManager.getLogger();
 
-
     final ServersWatcher serversWatcher;
+    final QueueProcessor queueProcessor;
+
+    public final Map<UUID, RPCUberService.SnapshotInfo> snapshotInfo;
 
     final UUID id;
     final UUID shard;
@@ -56,7 +65,7 @@ public class ShardServer {
         shardsServers = new ConcurrentHashMap<>();
         shardsCities = new ConcurrentHashMap<>();
 
-        serversWatcher = new ServersWatcher(this);
+        serversWatcher = new ServersWatcher(this, executor);
 
         this.zk = zkCon;
 
@@ -69,13 +78,15 @@ public class ShardServer {
         cityLoc = new ConcurrentHashMap<>();
 
         shardRoot = ZK.Path("shards", shardID.toString());
+        queueProcessor = new QueueProcessor(this, zk);
+        snapshotInfo = new ConcurrentHashMap<>();
     }
 
     public Map<UUID, Server> serversInShard() {
         return this.shardsServers.get(this.shard);
     }
 
-    private ZKPath registerShard(List<City> cities) throws KeeperException, InterruptedException {
+    private ZKPath registerMyShard(List<City> cities) throws KeeperException, InterruptedException {
         var path = ZK.Path("shards");
         try {
             this.zk.createPersistentPath(path);
@@ -130,7 +141,7 @@ public class ShardServer {
 
     private void registerInShard(CONFIG.Server cfg) throws InterruptedException, KeeperException {
         var servers_shard = this
-                .registerShard(CONFIG.getShardCities(this.shard))
+                .registerMyShard(CONFIG.getShardCities(this.shard))
                 .append("servers");
         try {
             this.zk.createPersistentPath(servers_shard);
@@ -225,9 +236,18 @@ public class ShardServer {
                 .build();
     }
 
+    public Map<UUID, UUID> getRandomServersForAllShards() {
+        Map<UUID, UUID> servers = new HashMap<>();
+        for (var k : this.shardsServers.entrySet()) {
+            var shardID = k.getKey();
+            var serverID = utils.Random.getRandomKey(k.getValue());
+            servers.put(serverID, shardID);
+        }
+        return servers;
+    }
 
-    boolean tryLockSeat(UUID ride_id, int seat_no) throws InterruptedException, KeeperException {
-        var lock = this.shardRoot.append("locks", String.format("%s_%d", ride_id, seat_no));
+    String tryLockSeat(UUID ride_id, int seat_no) throws InterruptedException, KeeperException {
+        var lock = getSeatLockZNode(ride_id, seat_no);
 
         try {
             this.zk.createNode(lock, CreateMode.PERSISTENT);
@@ -248,14 +268,276 @@ public class ShardServer {
         var min = Collections.min(children);
 
         if (min.equals(mylock)) {
-            log.debug("Has lock for seat {} of ride {} is created", seat_no, ride_id);
-            // Has lock :)
-            return true;
-        } else {
-            // Release lock
-            this.zk.delete(mylockpath);
-            return false;
+            if (!this.zk.nodeExists(lock.append("final"))) {
+                log.debug("Has lock for seat {} of ride {} is created", seat_no, ride_id);
+                // Has lock :)
+                return mylock;
+            }
+        }
+        // Release lock
+        this.releaseLockSeat(ride_id, seat_no, mylock);
+        return null;
+    }
+
+    ZKPath getSeatLockZNode(UUID ride_id, int seat_no) {
+        return this.shardRoot.append("locks", String.format("%s_%d", ride_id, seat_no));
+    }
+
+    ZKPath getShardQueueTaskZNode(UUID shardID) {
+        return ZK.Path("shards", shardID.toString(), "queue", "op_");
+    }
+
+    void releaseLockSeat(UUID ride_id, int seat_no, String lock) throws InterruptedException, KeeperException {
+        var seatLock = getSeatLockZNode(ride_id, seat_no);
+        var mylockpath = seatLock.append(lock);
+
+        try {
+            if (this.zk.nodeExists(mylockpath)) {
+                this.zk.delete(mylockpath);
+            }
+            log.debug("Lock {} for seat {} of ride {} was released", lock, seat_no, ride_id);
+        } catch (KeeperException e) {
+            if (e.code() == KeeperException.Code.NONODE) {
+                log.debug("Lock {} for seat {} of ride {} doesn't exist", lock, seat_no, ride_id);
+            } else {
+                throw e;
+            }
+        }
+
+        try {
+            if (this.zk.nodeExists(seatLock) && this.zk.getChildren(seatLock).isEmpty()) {
+                this.zk.delete(seatLock);
+            }
+            log.debug("Lock for seat {} of ride {} was released", seat_no, ride_id);
+        } catch (KeeperException e) {
+            if (e.code() == KeeperException.Code.NONODE) {
+                log.debug("Lock for seat {} of ride {} doesn't exist", seat_no, ride_id);
+            } else if (e.code() == KeeperException.Code.NOTEMPTY) {
+                log.debug("Lock for seat {} of ride {} is in use", seat_no, ride_id);
+            } else {
+                throw e;
+            }
         }
     }
 
+
+    public void invalidateSeatLock(UUID ride_id, int seat_no) throws InterruptedException, KeeperException {
+        var seatLock = getSeatLockZNode(ride_id, seat_no);
+        var seatLockFinal = seatLock.append("final");
+        var seatLockMyFinal = seatLock.append(this.id.toString());
+
+        try {
+            if (this.zk.nodeExists(seatLockFinal)) {
+                this.zk.createRegularNode(seatLockMyFinal);
+            }
+            log.debug("Server invalidated the lock for seat {} of ride {}", seat_no, ride_id);
+        } catch (KeeperException e) {
+            if (e.code() == KeeperException.Code.NONODE) {
+                log.debug("Lock for seat {} of ride {} doesn't exist", seat_no, ride_id);
+            } else {
+                throw e;
+            }
+        }
+
+        try {
+            var serversThatInvalidated = this.zk
+                    .getChildrenStr(seatLock)
+                    .stream()
+                    .map(UUID::fromString)
+                    .collect(Collectors.toSet());
+
+            var servers = this.serversInShard().keySet();
+
+            if (servers.containsAll(serversThatInvalidated)) {
+                this.zk.deleteSubTree(seatLock);
+            }
+            log.info("Lock for seat {} of ride {} was removed permanently", seat_no, ride_id);
+        } catch (KeeperException e) {
+            log.error("Keeper exception thrown while permanently the lock for seat {} in ride {}:\n{}", seat_no, ride_id, e);
+        }
+    }
+
+    public void invalidateSeatLockAsync(UUID ride_id, int seat_no) throws InterruptedException, KeeperException {
+        var seatLock = getSeatLockZNode(ride_id, seat_no);
+        var seatLockFinal = seatLock.append("final");
+        var seatLockMyFinal = seatLock.append(this.id.toString());
+
+        try {
+            if (this.zk.nodeExists(seatLockFinal)) {
+                this.zk.createRegularNode(seatLockMyFinal);
+            }
+            log.debug("Server invalidated the lock for seat {} of ride {}", seat_no, ride_id);
+        } catch (KeeperException e) {
+            if (e.code() == KeeperException.Code.NONODE) {
+                log.debug("Lock for seat {} of ride {} doesn't exist", seat_no, ride_id);
+            } else {
+                throw e;
+            }
+        }
+
+        try {
+            var serversThatInvalidated = this.zk
+                    .getChildrenStr(seatLock)
+                    .stream()
+                    .map(UUID::fromString)
+                    .collect(Collectors.toSet());
+
+            var servers = this.serversInShard().keySet();
+
+            if (servers.containsAll(serversThatInvalidated)) {
+                this.zk.deleteSubTree(seatLock);
+            }
+            log.info("Lock for seat {} of ride {} was removed permanently", seat_no, ride_id);
+        } catch (KeeperException e) {
+            log.error("Keeper exception thrown while permanently the lock for seat {} in ride {}:\n{}", seat_no, ride_id, e);
+        }
+    }
+
+    boolean atomicSeatsReserve(AtomicReferenceArray<RPCUberService.OfferCollector.Offer> offers,
+                               User consumer, ID transactionID) {
+        log.debug("Starting atomic seats reservation (Transaction ID {})", transactionID);
+        List<org.apache.zookeeper.Op> ops = new LinkedList<>();
+        Map<UUID, List<Task>> shardTasks = new HashMap<>();
+
+
+        for (int i = 0; i < offers.length(); i++) {
+            var offer = offers.get(i);
+            var rideID = offer.rideOffer.getRideID();
+            var rideUUID = utils.UUID.fromID(rideID);
+            var seat = offer.rideOffer.getSeat();
+            var lock = offer.rideOffer.getLock();
+
+            var seatLockZNode = getSeatLockZNode(rideUUID, seat);
+            var lockZnode = seatLockZNode.append(lock);
+            ops.add(ZK.Op.getData(lockZnode));
+            log.debug("Atomic seats reservation (Transaction ID {}) - Adding existence assertion for lock {}#{}/{}",
+                    transactionID, rideUUID, seat, lock);
+
+            var finalLockZnode = seatLockZNode.append("final");
+            ops.add(ZK.Op.createNode(finalLockZnode, CreateMode.PERSISTENT));
+            log.debug("Atomic seats reservation (Transaction ID {}) - Adding invalidation for lock {}#{}",
+                    transactionID, rideUUID, seat);
+
+            var shardID = offer.shardID;
+            var tasks = shardTasks.computeIfAbsent(shardID, k -> new LinkedList<>());
+
+            tasks.add(Task
+                    .newBuilder()
+                    .setInvalidSeatLock(InvalidSeatLockTask.newBuilder()
+                            .setRideID(rideID)
+                            .setSeat(seat)
+                            .build())
+                    .build()
+            );
+            log.debug("Atomic seats reservation (Transaction ID {}) - Adding invalidation task for lock {}#{} to shard {}",
+                    transactionID, rideUUID, seat, shardID);
+
+            tasks.add(Task
+                    .newBuilder()
+                    .setReserve(ReserveTask.newBuilder()
+                            .setRideID(rideID)
+                            .setSeat(seat)
+                            .setSource(offer.rideOffer.getRideInfo().getSource())
+                            .setConsumer(consumer)
+                            .build())
+                    .build()
+            );
+            log.debug("Atomic seats reservation (Transaction ID {}) - Adding reservation task for seat {}#{} for User({}, {}, {}) to shard {}",
+                    transactionID, rideUUID, seat, consumer.getFirstName(), consumer.getLastName(), consumer.getPhoneNumber(), shardID);
+        }
+
+
+        var shardsTaskLists = shardTasks
+                .entrySet()
+                .stream()
+                .map(e -> Pair.with(
+                        e.getKey(),
+                        TaskList.newBuilder().addAllTaskList(e.getValue()).build()
+                        )
+                )
+                .collect(Collectors.toMap(Pair::getValue0, Pair::getValue1));
+
+        for (var entry : shardsTaskLists.entrySet()) {
+            var shardID = entry.getKey();
+            var taskList = entry.getValue();
+
+            ops.add(ZK.Op.createNode(
+                    getShardQueueTaskZNode(shardID),
+                    CreateMode.PERSISTENT_SEQUENTIAL,
+                    taskList.toByteArray()));
+
+        }
+
+        log.debug("Submitting atomic seats reservation (Transaction ID {})", transactionID);
+        try {
+            this.zk.atomic(ops);
+
+        } catch (KeeperException e) {
+            log.error("KeeperException during the atomic seats reservation (Transaction ID {})", transactionID, e);
+            return false;
+        } catch (InterruptedException e) {
+            log.error("InterruptedException during the atomic seats reservation (Transaction ID {})", transactionID, e);
+            return false;
+        }
+        log.debug("Atomic seats reservation (Transaction ID {}) finished successfully", transactionID);
+        return true;
+    }
+    public boolean startSnapshotTask(UUID snapshotID, Map<UUID, UUID> servers) {
+        log.debug("Starting atomic snapshot task (Snapshot ID {})", snapshotID);
+        List<org.apache.zookeeper.Op> ops = new LinkedList<>();
+
+        for (var entry : servers.entrySet()) {
+            var serverID = entry.getKey();
+            var shardID = entry.getValue();
+
+            var snapshotTask = SnapshotTask.newBuilder()
+                    .setSnapshotID(utils.UUID.toID(snapshotID))
+                    .setRequestedServer(SnapshotTask.ServerEndPoint
+                            .newBuilder()
+                            .setShardID(utils.UUID.toID(shardID))
+                            .setServerID(utils.UUID.toID(serverID))
+                            .build())
+                    .setSendTo(SnapshotTask.ServerEndPoint
+                            .newBuilder()
+                            .setShardID(utils.UUID.toID(this.shard))
+                            .setServerID(utils.UUID.toID(this.id))
+                            .build())
+                    .build();
+            log.info("Adding snapshot task for shard {} (server {})", shardID, serverID);
+
+            ops.add(ZK.Op.createNode(
+                    getShardQueueTaskZNode(shardID),
+                    CreateMode.PERSISTENT_SEQUENTIAL,
+                    snapshotTask.toByteArray()));
+        }
+        log.debug("Submitting atomic snapshot task (Snapshot ID {})", snapshotID);
+        try {
+            this.zk.atomic(ops);
+        } catch (KeeperException e) {
+            log.error("KeeperException during the atomic snapshot task (Snapshot ID {})", snapshotID);
+            return false;
+        } catch (InterruptedException e) {
+            log.error("InterruptedException during the atomic snapshot task (Snapshot ID {})", snapshotID);
+            return false;
+        }
+        log.debug("Atomic snapshot task (Snapshot ID {}) submitted successfully", snapshotID);
+        return true;
+    }
+
+    public void sendSnapshot(UUID snapshotID, UUID toShardID, UUID toServerID) {
+        var streamObserver = this.
+                rpcClient
+                .getServerStub(toShardID, toServerID)
+                .sendSnapshot(new StreamObserver<SnapshotResponse>() {
+                    @Override public void onNext(SnapshotResponse snapshotResponse) { }
+                    @Override public void onError(Throwable throwable) { }
+                    @Override public void onCompleted() { }
+                });
+        streamObserver.onNext(SnapshotRequest.newBuilder()
+                .setSnapshotID(utils.UUID.toID(snapshotID))
+                .build());
+        this.data.sendSnapshot(streamObserver);
+        streamObserver.onCompleted();
+    }
 }
+
