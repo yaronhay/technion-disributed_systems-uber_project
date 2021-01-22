@@ -16,6 +16,7 @@ import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 
 // https://medium.com/consulner/framework-less-rest-api-in-java-dd22d4d642fa
 public class RESTController {
@@ -108,9 +109,9 @@ public class RESTController {
 
     }
 
-    public RESTController(int port) throws IOException {
+    public RESTController(int port, Executor executor) throws IOException {
         this.httpServer = HttpServer.create(new InetSocketAddress(port), 0);
-        this.httpServer.setExecutor(null);
+        this.httpServer.setExecutor(executor);
     }
 
     final Map<String, Map<String, Pair<Method, RestAPI>>> getRESTMethods() {
@@ -146,4 +147,9 @@ public class RESTController {
         }
     }
 
+    public final void close() {
+        this.httpServer.stop(1);
+        log.info("REST controller was shutdown");
+
+    }
 }

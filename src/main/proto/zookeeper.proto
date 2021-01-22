@@ -37,6 +37,10 @@ message InvalidSeatLockTask {
   int32 seat = 2;
 }
 
+message AddRideTask {
+  uber.obj.Ride ride = 1;
+}
+
 
 message SnapshotTask {
   message ServerEndPoint {
@@ -53,6 +57,7 @@ message Task {
     ReserveTask reserve = 1;
     InvalidSeatLockTask invalidSeatLock = 2;
     SnapshotTask  snapshot = 3;
+    AddRideTask addRide = 4;
   }
 }
 

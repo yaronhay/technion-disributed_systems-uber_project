@@ -14,6 +14,8 @@ service UberRideService {
   // on a server in the correct shard
   rpc addRide(uber.obj.Ride) returns (uber.obj.ID);
 
+  rpc addRideGossip(uber.obj.Ride) returns (uber.obj.ID);
+
   rpc planPath(PlanPathRequest) returns (PlanPathResponse);
 
   rpc snapshot(UberSnapshotRequest) returns (stream UberSnapshotResponse);

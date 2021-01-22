@@ -1,12 +1,18 @@
 import cfg.CONFIG;
+import org.apache.commons.io.FilenameUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import server.ShardServer;
+import uber.proto.objects.City;
 import utils.Host;
 import zookeeper.ZKConnection;
 
-import java.awt.*;
+import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.net.UnknownHostException;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Scanner;
 import java.util.UUID;
 import java.util.concurrent.Executor;
@@ -17,22 +23,41 @@ public class Main {
     static Logger log = LogManager.getLogger();
 
 
-    static ZKConnection initZKConnection() throws IOException {
-        var hosts = CONFIG.zkHosts;
+    static ZKConnection initZKConnection(List<Host> hosts) throws IOException {
         log.info("Connecting ZooKeeper Servers with host list: {}", Host.hostList(hosts));
 
         ZKConnection zk = new ZKConnection(hosts);
-        // zk.connectedSync();
         return zk;
     }
 
-    public static void start(CONFIG.Server server) {
+    static List<Host> getHosts(String file) {
+        List<Host> l = new LinkedList<>();
+        Scanner s = null;
+        try {
+            s = new Scanner(new File(file));
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
+            return null;
+        }
+        while (s.hasNext()) {
+            var host = s.next();
+            var port = s.nextInt();
+            try {
+                l.add(new Host(host, port));
+            } catch (UnknownHostException e) {
+                e.printStackTrace();
+            }
+        }
+        s.close();
+        return l;
+    }
+
+    public static void start(List<Host> zkHosts, CONFIG.Server server, List<City> shardCities) {
         Executor executor = Executors.newCachedThreadPool();
         ZKConnection zk = null;
         try {
-            zk = initZKConnection();
+            zk = initZKConnection(zkHosts);
         } catch (IOException e) {
-            zk.close();
             log.error("Cannot connect to ZooKeeper server", e);
             System.exit(1);
         }
@@ -42,12 +67,12 @@ public class Main {
             System.exit(1);
         }
 
-        var shardServer = new ShardServer(zk, new UUID(0, (long) server.shard), executor);
+        var shardServer = new ShardServer(zk, new UUID(0, server.shard), executor);
         boolean stat = false;
         try {
-            stat = shardServer.initialize(server);
+            stat = shardServer.initialize(server, shardCities);
         } catch (InterruptedException e) {
-            log.error("Interrupted Execption on server initialization", e);
+            log.error("Interrupted Execution on server initialization", e);
         }
 
         if (!stat) {
@@ -57,27 +82,56 @@ public class Main {
     }
 
     public static void main(String[] args) {
+        String zkHost = args[0];
+        var zkHosts = getHosts(zkHost);
 
-        int server_i = -1;
-       /* try {
-            server_i = Integer.parseInt(args[0]);
-        } catch (NumberFormatException e) {
-            log.error("Invalid server idx", e);
-            System.exit(1);
-        }*/
-        var in = new Scanner(System.in);
-        System.out.println("Insert ID: ");
-        server_i = in.nextInt();
+        String shardfile = args[1];
+        long shardID = 0;
+        {
+            var s = FilenameUtils.getBaseName(shardfile);
+            s = FilenameUtils.removeExtension(s);
+            shardID = Long.parseLong(s);
+        }
+        List<City> shardCities = getCities(shardfile);
 
-        CONFIG.Server server = null;
-        try {
-            server = CONFIG.servers.get(server_i);
-        } catch (ArrayIndexOutOfBoundsException e) {
-            log.error("Invalid server idx", e);
-            System.exit(1);
+        String thisAdd = args[2];
+        CONFIG.Server server;
+
+        {
+            var split = thisAdd.split(":");
+            var host = split[0];
+            var grpc = Integer.parseInt(split[1]);
+            var rest = Integer.parseInt(split[2]);
+            server = new CONFIG.Server(host,shardID,grpc, rest);
         }
 
-        start(server);
-        while (true) {}
+        start(zkHosts, server, shardCities);
+    }
+    private static List<City> getCities(String file) {
+        List<City> l = new LinkedList<>();
+        Scanner s = null;
+        try {
+            s = new Scanner(new File(file));
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
+            return null;
+        }
+        while (s.hasNext()) {
+            var name = s.next();
+            var x = s.nextInt();
+            var y = s.nextInt();
+
+            l.add(City.newBuilder()
+                    .setName(name)
+                    .setLocation(City.Location
+                            .newBuilder()
+                            .setX(x)
+                            .setY(y)
+                            .build())
+                    .setId(utils.UUID.toID(utils.UUID.generate()))
+                    .build());
+        }
+        s.close();
+        return l;
     }
 }

@@ -32,7 +32,6 @@ public class RPCServer {
             log.error("gRPC failed to start and ended with an error", e);
             return false;
         }
-        ShutdownService.addHook(RPCServer.this::shutdown);
         return true;
     }
 

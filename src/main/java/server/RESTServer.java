@@ -4,7 +4,6 @@ package server;
 import io.grpc.StatusRuntimeException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.json.JSONArray;
 import org.json.JSONObject;
 import uber.proto.objects.*;
 import uber.proto.rpc.PlanPathRequest;
@@ -15,6 +14,7 @@ import java.io.IOException;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 import java.util.function.Function;
 
 public final class RESTServer extends utils.RESTController {
@@ -22,8 +22,8 @@ public final class RESTServer extends utils.RESTController {
 
     final ShardServer shardServer;
 
-    public RESTServer(ShardServer shardServer, int port) throws IOException {
-        super(port);
+    public RESTServer(ShardServer shardServer, int port, Executor executor) throws IOException {
+        super(port, executor);
         this.shardServer = shardServer;
     }
 
@@ -79,7 +79,40 @@ public final class RESTServer extends utils.RESTController {
         }
     }
 
-    @RestAPI(Context = "/rides", Method = "PUT")
+    @RestAPI(Context = "/rides_gossip", Method = "PUT")
+    public void addRideGossip(JSONObject req, Response resp) {
+        Ride ride = asRide(req);
+        if (ride == null) {
+            resp.httpCode = 400;
+            resp.body.put("result", "Invalid Ride Information");
+            return;
+        }
+        UUID cityID = utils.UUID.fromID(ride.getSource().getId());
+        var cityShard = shardServer.cityShard.get(cityID);
+        var shardServers = shardServer.shardsServers.get(cityShard);
+
+        var serverID = utils.Random.getRandomKey(shardServers);
+        var stub = shardServer.rpcClient.getServiceServerStub(cityShard, serverID);
+
+        log.info("Submitting a new ride to server {} in shard {} with:\n{}", serverID, cityShard, req.toString(2));
+        var res = stub.addRideGossip(ride); // Todo failure
+
+        if (!res.getVal().isEmpty()) {
+            UUID rideID = utils.UUID.fromID(res);
+            resp.httpCode = 200;
+            resp.body.put("result", "success");
+            resp.body.put("ride-id", rideID.toString());
+            log.info("Server {} in shard {} added the new ride successfully with id {}",
+                    serverID, cityShard, rideID);
+        } else {
+            resp.httpCode = 500;
+            resp.body.put("result", "failure");
+            log.info("Server {} in shard {} failed to added the new ride successfully a failure response was sent to the client",
+                    serverID, cityShard);
+        }
+    }
+
+    @RestAPI(Context = "/rides", Method = "POST")
     public void addRide(JSONObject req, Response resp) {
         Ride ride = asRide(req);
         if (ride == null) {
@@ -95,7 +128,7 @@ public final class RESTServer extends utils.RESTController {
         var stub = shardServer.rpcClient.getServiceServerStub(cityShard, serverID);
 
         log.info("Submitting a new ride to server {} in shard {} with:\n{}", serverID, cityShard, req.toString(2));
-        var res = stub.addRide(ride); // Todo failure
+        var res = stub.addRide(ride);
 
         if (!res.getVal().isEmpty()) {
             UUID rideID = utils.UUID.fromID(res);

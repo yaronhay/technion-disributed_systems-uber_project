@@ -44,13 +44,19 @@ public class ShardData {
             UUID cityID = utils.UUID.fromID(ride.getSource().getId());
             CityRides cityRides = this.get(cityID);
 
+
+            var src = server.getCityByID(ride.getSource().getId());
+            var dst = server.getCityByID(ride.getDestination().getId());
             if (!cityRides.hasRide(rideID)) {
+                ride = ride
+                        .toBuilder()
+                        .setSource(src)
+                        .setDestination(dst)
+                        .build();
                 cityRides.addRide(rideID, ride);
             }
-            var src = server.getCityByID(ride.getSource().getId()).getName();
-            var dst = server.getCityByID(ride.getDestination().getId()).getName();
             log.info("Added ride {} -> {} on {} #{} to local database",
-                    src, dst, Utils.dateAsStr(ride.getDate()), rideID);
+                    src.getName(), dst.getName(), Utils.dateAsStr(ride.getDate()), rideID);
         } finally {
             this.lock.readLock().unlock();
         }
@@ -64,7 +70,7 @@ public class ShardData {
         this.lock.writeLock().lock();
         try {
             for (var city : cities.values()) {
-                if (city.offerRides(date, hops, offers, seats,rides, locks, transactionID, shardID, serverID)) {
+                if (city.offerRides(date, hops, offers, seats, rides, locks, transactionID, shardID, serverID)) {
                     break;
                 }
             }

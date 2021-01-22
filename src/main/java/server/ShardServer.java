@@ -5,16 +5,20 @@ import com.google.protobuf.ByteString;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.OpResult;
 import org.javatuples.Pair;
 import uber.proto.objects.City;
 import uber.proto.objects.ID;
+import uber.proto.objects.Ride;
 import uber.proto.objects.User;
 import uber.proto.rpc.SnapshotRequest;
 import uber.proto.rpc.SnapshotResponse;
 import uber.proto.zk.*;
 import uber.proto.zk.Shard;
+import utils.ShutdownService;
 import zookeeper.ZK;
 import zookeeper.ZKConnection;
 import zookeeper.ZKPath;
@@ -26,6 +30,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 public class ShardServer {
 
@@ -139,9 +144,9 @@ public class ShardServer {
     }
 
 
-    private void registerInShard(CONFIG.Server cfg) throws InterruptedException, KeeperException {
+    private void registerInShard(CONFIG.Server cfg, List<City> shardCities) throws InterruptedException, KeeperException {
         var servers_shard = this
-                .registerMyShard(CONFIG.getShardCities(this.shard))
+                .registerMyShard(shardCities)
                 .append("servers");
         try {
             this.zk.createPersistentPath(servers_shard);
@@ -183,6 +188,7 @@ public class ShardServer {
         if (!this.rpcServer.start()) {
             return false;
         }
+        ShutdownService.addHook(this.rpcServer::shutdown, "GRPC server");
 
         this.rpcClient = new RPCClient(this, executor);
         return true;
@@ -191,8 +197,9 @@ public class ShardServer {
     public boolean initRESTServer(int port) {
         try {
             log.info("Adding REST Server at port {}", port);
-            this.restServer = new RESTServer(this, port);
+            this.restServer = new RESTServer(this, port, executor);
             this.restServer.start();
+            ShutdownService.addHook(this.restServer::close, "REST Server");
             log.info("REST server started successfully");
             return true;
         } catch (IOException e) {
@@ -201,10 +208,11 @@ public class ShardServer {
         }
     }
 
-    public boolean initialize(CONFIG.Server cfg) throws InterruptedException {
+    public boolean initialize(CONFIG.Server cfg, List<City> shardCities) throws InterruptedException {
         try {
             this.serversWatcher.initialize();
-            this.registerInShard(cfg);
+            this.registerInShard(cfg, shardCities);
+            this.queueProcessor.initialize();
         } catch (KeeperException e) {
             return false;
         }
@@ -241,7 +249,9 @@ public class ShardServer {
         for (var k : this.shardsServers.entrySet()) {
             var shardID = k.getKey();
             var serverID = utils.Random.getRandomKey(k.getValue());
-            servers.put(serverID, shardID);
+            if (serverID != null) {
+                servers.put(serverID, shardID);
+            }
         }
         return servers;
     }
@@ -324,7 +334,7 @@ public class ShardServer {
     public void invalidateSeatLock(UUID ride_id, int seat_no) throws InterruptedException, KeeperException {
         var seatLock = getSeatLockZNode(ride_id, seat_no);
         var seatLockFinal = seatLock.append("final");
-        var seatLockMyFinal = seatLock.append(this.id.toString());
+        var seatLockMyFinal = seatLockFinal.append(this.id.toString());
 
         try {
             if (this.zk.nodeExists(seatLockFinal)) {
@@ -341,14 +351,14 @@ public class ShardServer {
 
         try {
             var serversThatInvalidated = this.zk
-                    .getChildrenStr(seatLock)
+                    .getChildrenStr(seatLockFinal)
                     .stream()
                     .map(UUID::fromString)
                     .collect(Collectors.toSet());
 
             var servers = this.serversInShard().keySet();
 
-            if (servers.containsAll(serversThatInvalidated)) {
+            if (serversThatInvalidated.containsAll(servers)) {
                 this.zk.deleteSubTree(seatLock);
             }
             log.info("Lock for seat {} of ride {} was removed permanently", seat_no, ride_id);
@@ -384,7 +394,7 @@ public class ShardServer {
 
             var servers = this.serversInShard().keySet();
 
-            if (servers.containsAll(serversThatInvalidated)) {
+            if (serversThatInvalidated.containsAll(servers)) {
                 this.zk.deleteSubTree(seatLock);
             }
             log.info("Lock for seat {} of ride {} was removed permanently", seat_no, ride_id);
@@ -394,7 +404,7 @@ public class ShardServer {
     }
 
     boolean atomicSeatsReserve(AtomicReferenceArray<RPCUberService.OfferCollector.Offer> offers,
-                               User consumer, ID transactionID) {
+                               User consumer, UUID transactionID) {
         log.debug("Starting atomic seats reservation (Transaction ID {})", transactionID);
         List<org.apache.zookeeper.Op> ops = new LinkedList<>();
         Map<UUID, List<Task>> shardTasks = new HashMap<>();
@@ -409,9 +419,9 @@ public class ShardServer {
 
             var seatLockZNode = getSeatLockZNode(rideUUID, seat);
             var lockZnode = seatLockZNode.append(lock);
-            ops.add(ZK.Op.getData(lockZnode));
-            log.debug("Atomic seats reservation (Transaction ID {}) - Adding existence assertion for lock {}#{}/{}",
-                    transactionID, rideUUID, seat, lock);
+            // ops.add(ZK.Op.getData(lockZnode));
+            //log.debug("Atomic seats reservation (Transaction ID {}) - Adding existence assertion for lock {}#{}/{}",
+            //        transactionID, rideUUID, seat, lock);
 
             var finalLockZnode = seatLockZNode.append("final");
             ops.add(ZK.Op.createNode(finalLockZnode, CreateMode.PERSISTENT));
@@ -469,17 +479,26 @@ public class ShardServer {
         }
 
         log.debug("Submitting atomic seats reservation (Transaction ID {})", transactionID);
+        List<OpResult> results;
         try {
-            this.zk.atomic(ops);
+            results = this.zk.atomic(ops);
 
         } catch (KeeperException e) {
-            log.error("KeeperException during the atomic seats reservation (Transaction ID {})", transactionID, e);
+            List<OpResult> resultserr = e.getResults();
+            log.error(new ParameterizedMessage("KeeperException during the atomic seats reservation (Transaction ID {}),\nException {} for path {}\nResults:\n\t{}",
+                    transactionID, e.getMessage(), e.getPath(),
+                    IntStream.range(0, resultserr.size())
+                            .mapToObj(i -> resultserr.get(i).toString() + " : " + ops.get(i).toString())
+                            .collect(Collectors.joining("\n\t"))), e);
             return false;
         } catch (InterruptedException e) {
             log.error("InterruptedException during the atomic seats reservation (Transaction ID {})", transactionID, e);
             return false;
         }
-        log.debug("Atomic seats reservation (Transaction ID {}) finished successfully", transactionID);
+        log.debug("Atomic seats reservation (Transaction ID {}) finished successfully\nResults:\n\t{}",
+                transactionID, IntStream.range(0, results.size())
+                        .mapToObj(i -> results.get(i).toString() + " : " + ops.get(i).toString())
+                        .collect(Collectors.joining("\n\t")));
         return true;
     }
     public boolean startSnapshotTask(UUID snapshotID, Map<UUID, UUID> servers) {
@@ -508,7 +527,14 @@ public class ShardServer {
             ops.add(ZK.Op.createNode(
                     getShardQueueTaskZNode(shardID),
                     CreateMode.PERSISTENT_SEQUENTIAL,
-                    snapshotTask.toByteArray()));
+                    TaskList.newBuilder()
+                            .addTaskList(Task.newBuilder()
+                                    .setSnapshot(snapshotTask)
+                                    .build()
+                            )
+                            .build()
+                            .toByteArray()
+            ));
         }
         log.debug("Submitting atomic snapshot task (Snapshot ID {})", snapshotID);
         try {
@@ -538,6 +564,30 @@ public class ShardServer {
                 .build());
         this.data.sendSnapshot(streamObserver);
         streamObserver.onCompleted();
+    }
+
+    public boolean atomicAddRide(UUID rideID, Ride ride) {
+        log.debug("Starting atomic add ride task (Ride ID {})", rideID);
+        List<org.apache.zookeeper.Op> ops = new LinkedList<>();
+
+        var addRideTask = AddRideTask.newBuilder().setRide(ride).build();
+        var task = Task.newBuilder().setAddRide(addRideTask).build();
+        var data = TaskList.newBuilder().addTaskList(task).build().toByteArray();
+
+        log.debug("Submitting atomic add ride task (Ride ID {})", rideID);
+        try {
+            this.zk.createNode(getShardQueueTaskZNode(this.shard),
+                    CreateMode.PERSISTENT_SEQUENTIAL,
+                    data);
+        } catch (KeeperException e) {
+            log.error("KeeperException during the atomic add ride task (Ride ID {})", rideID);
+            return false;
+        } catch (InterruptedException e) {
+            log.error("InterruptedException during the atomic add ride task (Ride ID {})", rideID);
+            return false;
+        }
+        log.debug("Atomic add ride task (Ride ID {}) submitted successfully", rideID);
+        return true;
     }
 }
 

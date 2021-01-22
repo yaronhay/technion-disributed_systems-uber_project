@@ -1,27 +1,23 @@
 #!/bin/bash
 
-read -r -d '' req_body <<-EOF
-{
-  "day" :                 13,
-  "month":                1,
-  "year" :                2021,
-  "source":               "city4",
-  "destination":          "city3",
-  "firstname" :           "Yaron",
-  "lastname":             "Hay",
-  "phonenumber":          "0123456789",
-  "permitted-deviation":  1,
-  "vacancies":            1
-}
-EOF
+req_body="$2"
+serverList="$1"
+random_server=$(sed '/^\s*$/d' "$serverList" | gshuf -n 1)
 
-host="localhost"
-port="6000"
-
-method="PUT"
+method="POST"
 resource="rides"
+header="Content-Type: application/json"
 
-curl --header "Content-Type: application/json" \
+headers=$(mktemp)
+body=$(mktemp)
+
+curl \
+  --header "$header" \
   --request $method \
   --data "$req_body" \
-  "$host:$port/$resource"
+  --dump-header "$headers" \
+  --output "$body" \
+  --write-out "@client/curl-format.txt" \
+  "$random_server/$resource"  > /dev/null 2> /dev/null
+cat "$body"
+rm "$headers" "$body"

@@ -1,0 +1,12 @@
+{
+  "day": 18,
+  "month": 1,
+  "year": 2021,
+  "source": "A",
+  "destination": "B",
+  "firstname": "Dan",
+  "lastname": "Hay",
+  "phonenumber": "0123456789",
+  "permitted-deviation": 1,
+  "vacancies": 1
+}

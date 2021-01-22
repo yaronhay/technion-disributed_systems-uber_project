@@ -1,13 +1,19 @@
 #!/bin/bash
 
+serverList="$1"
+random_server=$(sed '/^\s*$/d' "$serverList" | gshuf -n 1)
 
-host="localhost"
-port="6003"
-
-method="Get"
+method="GET"
 resource="snapshot"
 
-curl --header "Content-Type: application/json" \
+headers=$(mktemp)
+
+curl \
+  --header "Content-Type: application/json" \
   --request $method \
-  --data "$req_body" \
-  "$host:$port/$resource"
+  --dump-header "$headers" \
+  --output "log/snapshot$(date +"%Y.%m.%d-%T").json" \
+  --write-out "@client/curl-format.txt" \
+  "$random_server/$resource"
+
+rm "$headers"

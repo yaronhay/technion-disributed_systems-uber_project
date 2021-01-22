@@ -10,6 +10,9 @@ public class Random {
 
     public static <K, V> K getRandomKey(Map<K, V> map) {
         var keys = map.keySet().toArray();
+        if (keys.length == 0) {
+            return null;
+        }
         var idx = generator.nextInt(keys.length);
 
         return (K) keys[idx];

@@ -62,8 +62,20 @@ public class CityRides {
     }
 
     public void addReservation(UUID rideID, int seat, User consumer) {
-        var reservation = getReservations(rideID, seat);
-        reservation.add(seat - 1, consumer);
+        var reservations = getReservations(rideID, seat);
+        synchronized (reservations) {
+            var seatIdx = seat - 1;
+            var data = reservations.get(seatIdx);
+            if (data != null) {
+                log.error("Double Reservation Error: Seat number {} in ride {} is taken by User({}, {}, {})\nCannot reserve seat for User({}, {}, {})",
+                        seat, rideID,
+                        data.getFirstName(), data.getLastName(), data.getPhoneNumber(),
+                        consumer.getFirstName(), consumer.getLastName(), consumer.getPhoneNumber());
+                throw new IllegalStateException("Double reservation for a seat is illegal");
+            }
+            reservations.set(seat - 1, consumer);
+        }
+
     }
 
     public void sendSnapshot(StreamObserver<SnapshotRequest> streamObserver) {
@@ -165,22 +177,22 @@ public class CityRides {
     }
 
     int getEmptySeat(UUID rideID, Ride ride, RideTestInfo info) {
-        var lst = getReservations(rideID, ride.getVacancies());
+        var reservations = getReservations(rideID, ride.getVacancies());
         int seat = 0;
-        synchronized (lst) {
+
+        synchronized (reservations) {
             int i = 0;
-            for (User user : lst) {
+            for (User user : reservations) {
                 i++;
                 if (user == null) {
                     seat = i;
-
                     break;
                 }
             }
         }
         var rideSrc = utils.UUID.fromID(ride.getSource().getId());
         var rideDst = utils.UUID.fromID(ride.getDestination().getId());
-        if (seat != -1) {
+        if (seat != 0) {
             info.s2 = String.format("Found an empty - seat no. %d in ride %s -> %s",
                     seat, server.cityName.get(rideSrc), server.cityName.get(rideDst)
             );
@@ -241,4 +253,5 @@ public class CityRides {
         );
         return false;
     }
+
 }

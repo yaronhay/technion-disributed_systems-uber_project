@@ -8,6 +8,7 @@ import io.grpc.protobuf.StatusProto;
 import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.zookeeper.KeeperException;
 import org.javatuples.Pair;
 import uber.proto.objects.*;
@@ -32,8 +33,26 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
         this.server = server;
     }
 
-    @Override
-    public void addRide(Ride request, StreamObserver<ID> responseObserver) {
+    @Override public void addRide(Ride request, StreamObserver<ID> responseObserver) {
+        var id = utils.UUID.generate();
+        ID rideID = utils.UUID.toID(id);
+        request = request.toBuilder()
+                .setId(rideID)
+                .build();
+
+
+        log.debug("Received a new ride to add. Assigned ride id of {}", id);
+        if (this.server.atomicAddRide(id, request)) {
+            log.debug("The atomic add ride ({}) finished - returning id as result to caller", id);
+            responseObserver.onNext(rideID);
+        } else {
+            log.error("The atomic add ride ({}) ended with an error", id);
+            responseObserver.onNext(ID.newBuilder().build());
+        }
+        responseObserver.onCompleted();
+    }
+
+    @Override public void addRideGossip(Ride request, StreamObserver<ID> responseObserver) {
         var id = utils.UUID.generate();
         ID rideID = utils.UUID.toID(id);
         request = request.toBuilder().setId(rideID).build();
@@ -83,7 +102,7 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
         var success = this.server.atomicSeatsReserve(
                 offerCollector.offers,
                 request.getConsumer(),
-                transactionID);
+                transactionUUID);
 
         var response = PlanPathResponse.newBuilder();
         if (!success) {
@@ -99,7 +118,7 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
             log.debug("The path planning (Transaction ID {}) with self finished - returning result to caller", transactionUUID);
         }
 
-        releaseLocks(transactionID, servers, offerCollector.getOffersSeatsToRelease());
+        releaseLocks(transactionUUID, servers, offerCollector.getOffersSeatsToRelease());
 
         responseObserver.onNext(response.build());
         responseObserver.onCompleted();
@@ -126,7 +145,7 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
             toRelease = offerCollector.getAllSeatsToRelease();
         }
 
-        releaseLocks(utils.UUID.toID(transactionUUID), servers, toRelease);
+        releaseLocks(transactionUUID, servers, toRelease);
 
 
         return offersOK;
@@ -163,7 +182,7 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
         return offersOK;
     }
 
-    private void releaseLocks(ID transactionID, Map<UUID, UUID> servers, Map<UUID, ReleaseSeatsRequest> toRelease) {
+    private void releaseLocks(UUID transactionID, Map<UUID, UUID> servers, Map<UUID, ReleaseSeatsRequest> toRelease) {
         for (var k : toRelease.entrySet()) {
             var serverID = k.getKey();
             var releaseSeatsRequest = k.getValue();
@@ -201,16 +220,12 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
 
         ID transactionID;
         final Object lock;
-        //ID[] offers;
         final List<Offer> toRelease;
         AtomicReferenceArray<Offer> offers;
-        //UUID[] shards;
         CountDownLatch latch;
         OfferCollector(int n, int size, ID transactionID) {
             this.transactionID = transactionID;
             lock = new Object();
-            //offers = new ID[n];
-            //shards = new UUID[n];
             offers = new AtomicReferenceArray<>(n);
             latch = new CountDownLatch(size);
             toRelease = Collections.synchronizedList(new LinkedList<>());
@@ -249,7 +264,7 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
         private void addOfferToReleaseRequest(Map<UUID, ReleaseSeatsRequest.Builder> res) {
             for (var i = 0; i < offers.length(); i++) {
                 var offer = offers.get(i);
-                if (offer == null) {
+                if (offer != null) {
                     var builder =
                             res.computeIfAbsent(offer.serverID, k -> ReleaseSeatsRequest.newBuilder());
                     builder.addOffers(offer.rideOffer);
@@ -268,6 +283,7 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
 
         StreamObserver<OfferRidesResponse> collector(UUID shardID, UUID serverID, UUID transactionID) {
             return new StreamObserver<>() {
+                private List<Offer> offersReceived = new LinkedList<>();
                 final AtomicBoolean wasRun = new AtomicBoolean(false);
                 private void countDown() {
                     if (!wasRun.getAndSet(true)) {
@@ -299,15 +315,20 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
                         if (!offers.compareAndSet(i, null, offer)) {
                             toRelease.add(offer);
                         }
+
+                        offersReceived.add(offer);
                     }
 
                 }
                 @Override public void onError(Throwable throwable) {
-                    log.error("Receiving ride offers from server {} in shard {}  (Transaction ID {}) ended with an error : \n {}", serverID, shardID, transactionID, throwable);
+                    log.error(new ParameterizedMessage("Receiving ride offers from server {} in shard {}  (Transaction ID {}) ended with an error:", serverID, shardID, transactionID), throwable);
                     this.countDown();
                 }
                 @Override public void onCompleted() {
-                    log.debug("Receiving ride offers from server {} in shard {}  (Transaction ID {}) completed", serverID, shardID, transactionID);
+                    log.info("Receiving ride offers from server {} in shard {}  (Transaction ID {}) completed:\n\t{}", serverID, shardID, transactionID,
+                            offersReceived.stream()
+                                    .map(Offer::toString)
+                                    .collect(Collectors.joining("\n\t")));
                     this.countDown();
                 }
             };

@@ -3,16 +3,19 @@ package server;
 import com.google.protobuf.InvalidProtocolBufferException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.javatuples.Pair;
+import uber.proto.objects.Ride;
 import uber.proto.zk.Task;
 import uber.proto.zk.TaskList;
 import zookeeper.ZKConnection;
 import zookeeper.ZKPath;
 
+import java.lang.reflect.ParameterizedType;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -43,9 +46,9 @@ public class QueueProcessor {
     }
 
     public void initialize() throws KeeperException, InterruptedException {
-        lastOp = new AtomicInteger(0);
-        lastAddedOp = new AtomicInteger(0);
-
+        lastOp = new AtomicInteger(-1);
+        lastAddedOp = new AtomicInteger(-1);
+        this.updateTasks();
         new Thread(this::processTasks).start();
     }
 
@@ -82,6 +85,14 @@ public class QueueProcessor {
                         this.server.sendSnapshot(snapshotID, toShardID, toServerID);
                     }
                 }
+
+                case ADDRIDE -> {
+                    var task = item.getAddRide();
+                    var ride = task.getRide();
+                    var rideID = utils.UUID.fromID(ride.getId());
+
+                    server.data.addRide(rideID, ride);
+                }
                 case TASK_NOT_SET -> {
                     log.warn("Task in task list {} is empty", opID);
                 }
@@ -100,7 +111,7 @@ public class QueueProcessor {
                     .stream().filter(s -> filter.compareTo(s) < 0)
                     .sorted()
                     .collect(Collectors.toList());
-
+            log.debug("Filtered tasks the downloaded tasks from queue ()");
             synchronized (insertLock) {
                 for (var child : children) {
                     int opID = Integer.parseInt(child.substring("op_".length()));
@@ -138,6 +149,7 @@ public class QueueProcessor {
 
 
     void processTasks() {
+        log.info("Queue processor started");
         for (; ; ) {
             try {
                 var element = tasksQueue.take();
@@ -148,7 +160,7 @@ public class QueueProcessor {
                 try {
                     this.doTaskList(taskList.getTaskListList(), opID);
                 } catch (Exception e) {
-                    log.error("An exception was thrown while processing task list {}", opID);
+                    log.error(new ParameterizedMessage("An exception was thrown while processing task list {}\n:{}", opID), e);
                 }
                 log.info("Handling task {} for tasks queue was successful", opID);
 
@@ -166,7 +178,7 @@ public class QueueProcessor {
 
         this.zk.createNode(myPath, CreateMode.PERSISTENT, (rc1, path) -> {
             if (rc1 != KeeperException.Code.OK) {
-                log.error("Error on creation of task {} done indicator node\n:{}", opID, rc1);
+                log.error("Error on creation of task {} done indicator node:\nPath: {}\nCode: {}", opID, path.str(), rc1);
                 return;
             }
 
@@ -181,7 +193,7 @@ public class QueueProcessor {
                         .collect(Collectors.toSet());
                 var servers = this.server.serversInShard().keySet();
 
-                if (servers.containsAll(serversThatInvalidated)) {
+                if (serversThatInvalidated.containsAll(servers)) {
                     this.zk.deleteSubTree(taskPath, rc3 -> {
                         log.info("Task {} was permanently removed from the queue", opID);
                     });

@@ -32,11 +32,11 @@ public class CONFIG {
 
     public static class Server {
         public final String host;
-        public final int shard;
+        public final long shard;
         public final int grpcPort;
         public final int restPort;
 
-        public Server(String host, int shard, int grpcPort, int restPort) {
+        public Server(String host, long shard, int grpcPort, int restPort) {
             this.host = host;
             this.shard = shard;
             this.grpcPort = grpcPort;

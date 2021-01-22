@@ -43,7 +43,8 @@ public class JSONConverters {
     }
     public static JSONObject toJSON(City c) {
         return (new JSONObject())
-                .put("id", UUID.fromID(c.getId()));
+                .put("id", UUID.fromID(c.getId()))
+                .put("name", c.getName());
     }
     public static JSONObject toJSON(RideStatus rideStatus) {
         var ride = toJSON(rideStatus.getRide());
@@ -52,7 +53,9 @@ public class JSONConverters {
         var reservations = (new JSONArray())
                 .putAll(IntStream
                         .range(1, rideStatus.getRide().getVacancies() + 1)
-                        .mapToObj(i -> reservationsMap.get(i)));
+                        .mapToObj(i -> reservationsMap.get(i))
+                        .map(u -> u != null ? toJSON(u) : null)
+                        .collect(Collectors.toList()));
         return (new JSONObject())
                 .put("ride-info", ride)
                 .put("reservations", reservations);

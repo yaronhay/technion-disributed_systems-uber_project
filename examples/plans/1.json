@@ -1,0 +1,13 @@
+{
+  "day" :         17,
+  "month":        1,
+  "year" :        2021,
+  "firstname" :   "Yaron",
+  "lastname":     "Hay",
+  "phonenumber":  "0123456789",
+  "cities":       [
+    "E",
+    "C",
+    "D"
+  ]
+}

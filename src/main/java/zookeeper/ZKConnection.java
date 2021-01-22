@@ -2,6 +2,7 @@ package zookeeper;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.data.ACL;
 import utils.Host;
@@ -151,7 +152,7 @@ public class ZKConnection {
                 .stream()
                 .map(node::append)
                 .collect(Collectors.toList());
-        log.debug("Got {} children of {} : {}", children.size(), node.str(), children);
+        log.debug("Got {} children of {} : {}", children.size(), node.str(), children.stream().map(ZKPath::str));
         return children;
     }
     public List<String> getChildrenStr(ZKPath node, Watcher w) throws KeeperException, InterruptedException {
@@ -197,9 +198,12 @@ public class ZKConnection {
     }
 
     public void deleteSubTree(ZKPath node, VoidCallback callback) {
-        var r  = new Pointer<Runnable>();
-        r.val = () -> {
-            this.nodeExists(node, (rc, exists) -> {
+        this.nodeExists(node, (rc, exists) -> {
+            if (rc != KeeperException.Code.OK) {
+                callback.processResult(rc);
+                return;
+            }
+            if (exists) {
                 try {
                     ZKUtil.deleteRecursive(
                             this.zk,
@@ -209,19 +213,19 @@ public class ZKConnection {
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 } catch (KeeperException e) {
-                    log.error("Keeper exception thrown when deleting node {} recursively:\n{}", node.str(), e);
+                    log.error(new ParameterizedMessage("Keeper exception thrown when deleting node {} recursively:\n", node.str()), e);
                     if (e.code() == KeeperException.Code.NONODE) {
-                        log.warn("No Node Keeper Exception was thrown while deleting recursively: {}", e.getPath());
-                        r.val.run();
+                        callback.processResult(KeeperException.Code.OK);
+                        return;
                     }
                 }
-            });
-        };
-        r.val.run();
+            } else {
+                callback.processResult(KeeperException.Code.OK);
+            }
+        });
     }
 
     public List<OpResult> atomic(Iterable<Op> ops) throws KeeperException, InterruptedException {
         return this.zk.multi(ops);
     }
-
 }

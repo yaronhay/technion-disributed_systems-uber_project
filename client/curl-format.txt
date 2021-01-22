@@ -1,0 +1,2 @@
+Status Code: %{http_code}\n
+Total Time:  %{time_total}s\n
