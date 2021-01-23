@@ -3,6 +3,9 @@ package utils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import uber.proto.objects.Date;
+import uber.proto.objects.Reservation;
+
+import java.util.List;
 
 public class Utils {
     static final Logger log = LogManager.getLogger();
@@ -35,5 +38,12 @@ public class Utils {
     }
     public static String dateAsStr(Date date) {
         return String.format("%02d/%02d/%04d", date.getDay(), date.getMonth(), date.getYear());
+    }
+
+
+    public static <T> void ensureListSize(List<T> l, int size) {
+        while (l.size() < size) {
+            l.add(null);
+        }
     }
 }

@@ -21,20 +21,18 @@ public class CityRides {
     final static Logger log = LogManager.getLogger();
 
     private Map<UUID, PlanPathRequest> paths;
-    private Map<UUID, List<User>> reservations;
+    private Map<UUID, List<Reservation>> reservations;
     private Map<String, List<UUID>> schedule;
     private Map<UUID, Ride> rides;
 
     final ShardServer server;
 
-    List<User> getReservations(UUID rideID, int minSize) {
+    List<Reservation> getReservations(UUID rideID, int minSize) {
         var l = reservations.computeIfAbsent(rideID,
-                id -> Collections.synchronizedList(new LinkedList<User>()));
+                id -> Collections.synchronizedList(new LinkedList<>()));
         if (minSize > 0) {
             synchronized (l) {
-                while (l.size() < minSize) {
-                    l.add(null);
-                }
+                Utils.ensureListSize(l, minSize);
             }
         }
         return l;
@@ -68,19 +66,21 @@ public class CityRides {
         return this.rides.containsKey(rideID);
     }
 
-    public void addReservation(UUID rideID, int seat, User consumer) {
+    public void addReservation(UUID rideID, int seat, Reservation reservation) {
+        var consumer = reservation.getConsumer();
         var reservations = getReservations(rideID, seat);
         synchronized (reservations) {
             var seatIdx = seat - 1;
             var data = reservations.get(seatIdx);
             if (data != null) {
+                var user = data.getConsumer();
                 log.error("Double Reservation Error: Seat number {} in ride {} is taken by User({}, {}, {})\nCannot reserve seat for User({}, {}, {})",
                         seat, rideID,
-                        data.getFirstName(), data.getLastName(), data.getPhoneNumber(),
+                        user.getFirstName(), user.getLastName(), user.getPhoneNumber(),
                         consumer.getFirstName(), consumer.getLastName(), consumer.getPhoneNumber());
                 throw new IllegalStateException("Double reservation for a seat is illegal");
             }
-            reservations.set(seat - 1, consumer);
+            reservations.set(seat - 1, reservation);
         }
 
     }
@@ -103,6 +103,14 @@ public class CityRides {
             streamObserver.onNext(SnapshotRequest
                     .newBuilder()
                     .setRideStatus(rideStatus)
+                    .build());
+        }
+
+        for (var transactionID : this.paths.keySet()) {
+            var path = paths.get(transactionID);
+            streamObserver.onNext(SnapshotRequest
+                    .newBuilder()
+                    .setPathPlan(path)
                     .build());
         }
     }
@@ -201,7 +209,7 @@ public class CityRides {
 
         synchronized (reservations) {
             int i = 0;
-            for (User user : reservations) {
+            for (var user : reservations) {
                 i++;
                 if (user == null && i > limit) {
                     seat = i;

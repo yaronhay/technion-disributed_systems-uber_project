@@ -6,14 +6,14 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.json.JSONObject;
 import uber.proto.objects.*;
+import uber.proto.objects.Date;
 import uber.proto.rpc.PlanPathRequest;
 import uber.proto.rpc.UberSnapshotRequest;
 import utils.JSONConverters;
+import utils.Utils;
 
 import java.io.IOException;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.Executor;
 import java.util.function.Function;
 
@@ -186,6 +186,7 @@ public final class RESTServer extends utils.RESTController {
                 return City
                         .newBuilder()
                         .setId(utils.UUID.toID(id))
+                        .setName(shardServer.cityName.get(id))
                         .build();
             };
 
@@ -246,7 +247,10 @@ public final class RESTServer extends utils.RESTController {
 
     @RestAPI(Context = "/snapshot", Method = "GET", hasJSONRequest = false)
     public void snapshot(JSONObject req, Response resp) {
-        JSONObject snapshot = new JSONObject();
+        JSONObject rides = new JSONObject();
+
+        Map<UUID, PlanPathRequest> plans = new HashMap<>();
+        Map<UUID, List<Reservation>> planRides = new HashMap<>();
 
         log.info("Starting a new snapshot request");
 
@@ -256,10 +260,29 @@ public final class RESTServer extends utils.RESTController {
                     .getServiceServerStub(shardServer.shard, shardServer.id)
                     .snapshot(UberSnapshotRequest.newBuilder().build())
                     .forEachRemaining(snapshotResponse -> {
-                        var rideStatus = snapshotResponse.getRideStatus();
-                        var rideID = utils.UUID.fromID(rideStatus.getRide().getId());
+                        if (snapshotResponse.hasRideStatus()) {
+                            var rideStatus = snapshotResponse.getRideStatus();
+                            var rideID = utils.UUID.fromID(rideStatus.getRide().getId());
+                            rides.put(rideID.toString(), JSONConverters.toJSON(rideStatus));
 
-                        snapshot.put(rideID.toString(), JSONConverters.toJSON(rideStatus));
+                            var reservations = rideStatus.getReservationsMap();
+                            for (var entry : reservations.entrySet()) {
+                                var hop = entry.getKey();
+                                var reservation = entry.getValue();
+                                var transactionID = utils.UUID.fromID(reservation.getTransactionID());
+                                var l = planRides.computeIfAbsent(transactionID, k -> new LinkedList<>());
+                                Utils.ensureListSize(l, hop);
+                                l.set(hop - 1, reservation.toBuilder().setRideID(
+                                        utils.UUID.toID(rideID)
+                                ).build());
+                            }
+                        } else if (snapshotResponse.hasPathPlan()) {
+                            var path = snapshotResponse.getPathPlan();
+                            var transactionID = utils.UUID.fromID(path.getTransactionID());
+                            plans.put(transactionID, path);
+                            var l = planRides.computeIfAbsent(transactionID, k -> new LinkedList<>());
+                            Utils.ensureListSize(l, path.getHopsCount());
+                        }
                     });
         } catch (StatusRuntimeException e) {
             log.warn("Caught Status Runtime Exception");
@@ -271,7 +294,10 @@ public final class RESTServer extends utils.RESTController {
 
         resp.httpCode = 200;
         resp.body.put("result", "success");
-        resp.body.put("snapshot", snapshot);
+        resp.body.put("snapshot",
+                (new JSONObject())
+                        .put("rides", rides)
+                        .put("path-plans", JSONConverters.toJSON(plans, planRides)));
         log.info("Snapshot sent");
     }
 

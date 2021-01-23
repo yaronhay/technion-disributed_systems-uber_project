@@ -6,6 +6,7 @@ option java_package = "uber.proto.rpc";
 package uber.rpc;
 
 import "objects.proto";
+import "rpc/uber_service.proto";
 
 
 service ServerCommunication {
@@ -50,6 +51,7 @@ message ReleaseSeatsResponse {
 message SnapshotRequest {
   uber.obj.ID snapshotID = 1;
   uber.obj.RideStatus rideStatus = 2;
+  uber.rpc.PlanPathRequest pathPlan = 3;
 
 }
 message SnapshotResponse {

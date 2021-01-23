@@ -92,10 +92,15 @@ public class RPCServerCommunicationService extends ServerCommunicationGrpc.Serve
             @Override public void onNext(SnapshotRequest snapshotRequest) {
                 if (started) {
                     synchronized (streamObserver) {
-                        streamObserver.onNext(UberSnapshotResponse
-                                .newBuilder()
-                                .setRideStatus(snapshotRequest.getRideStatus())
-                                .build());
+                        var resp = UberSnapshotResponse.newBuilder();
+                        if (snapshotRequest.hasRideStatus()) {
+                            resp.setRideStatus(snapshotRequest.getRideStatus());
+                        }
+                        if (snapshotRequest.hasPathPlan()) {
+                            resp.setPathPlan(snapshotRequest.getPathPlan());
+                        }
+
+                        streamObserver.onNext(resp.build());
                     }
                 } else {
                     if (snapshotRequest.hasSnapshotID()) {

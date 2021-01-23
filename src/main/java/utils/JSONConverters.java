@@ -4,8 +4,10 @@ import org.apache.commons.lang.math.IntRange;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import uber.proto.objects.*;
+import uber.proto.rpc.PlanPathRequest;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -59,5 +61,40 @@ public class JSONConverters {
         return (new JSONObject())
                 .put("ride-info", ride)
                 .put("reservations", reservations);
+    }
+    private static JSONObject toJSON(Reservation u) {
+        return (new JSONObject())
+                .put("consumer", toJSON(u.getConsumer()))
+                .put("plan-id", UUID.fromID(u.getTransactionID()));
+    }
+    public static JSONObject toJSON(Map<java.util.UUID, PlanPathRequest> plans, Map<java.util.UUID, List<Reservation>> planRides) {
+        var res = new JSONObject();
+        for (var id : plans.keySet()) {
+            var plan = plans.get(id);
+            var rides = planRides.get(id);
+            res.put(id.toString(), toJSON(plan, rides));
+        }
+        return res;
+    }
+    public static JSONObject toJSON(PlanPathRequest plan, List<Reservation> rides) {
+        var hops = plan.getHopsList();
+
+
+        var array = new JSONArray();
+        for (int i = 0; i < hops.size(); i++) {
+            var hop = hops.get(i);
+            var ride = rides.get(i);
+            array.put((new JSONObject())
+                    .put("source", hop.getSrc().getName())
+                    .put("destination", hop.getDst().getName())
+                    .put("ride-id", ride != null ?
+                            utils.UUID.fromID(ride.getRideID()).toString() : "null")
+            );
+        }
+        return (new JSONObject())
+                .put("date", toJSON(plan.getDate()))
+                .put("consumer", toJSON(plan.getConsumer()))
+                .put("rides", array);
+
     }
 }

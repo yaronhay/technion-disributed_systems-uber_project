@@ -10,10 +10,7 @@ import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.OpResult;
 import org.javatuples.Pair;
-import uber.proto.objects.City;
-import uber.proto.objects.ID;
-import uber.proto.objects.Ride;
-import uber.proto.objects.User;
+import uber.proto.objects.*;
 import uber.proto.rpc.PlanPathRequest;
 import uber.proto.rpc.SnapshotRequest;
 import uber.proto.rpc.SnapshotResponse;
@@ -462,7 +459,10 @@ public class ShardServer {
                             .setRideID(rideID)
                             .setSeat(seat)
                             .setSource(offer.rideOffer.getRideInfo().getSource())
-                            .setConsumer(consumer)
+                            .setReservation(Reservation.newBuilder()
+                                    .setConsumer(consumer)
+                                    .setTransactionID(utils.UUID.toID(transactionID))
+                                    .build())
                             .build())
                     .build()
             );

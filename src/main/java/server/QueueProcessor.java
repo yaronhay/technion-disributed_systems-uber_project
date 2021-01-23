@@ -57,12 +57,12 @@ public class QueueProcessor {
             switch (item.getTaskCase()) {
                 case RESERVE -> {
                     var task = item.getReserve();
-                    var consumer = task.getConsumer();
+                    var reservation = task.getReservation();
                     var rideID = utils.UUID.fromID(task.getRideID());
                     var seat = task.getSeat();
                     var srcCity = utils.UUID.fromID(task.getSource().getId());
 
-                    this.server.data.reserveSeat(srcCity, rideID, seat, consumer);
+                    this.server.data.reserveSeat(srcCity, rideID, seat, reservation);
                 }
                 case INVALIDSEATLOCK -> {
                     var task = item.getInvalidSeatLock();

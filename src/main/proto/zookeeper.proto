@@ -28,8 +28,9 @@ message Shard {
 message ReserveTask {
   uber.obj.ID rideID = 1;
   int32 seat = 2;
-  uber.obj.User consumer = 3;
+  //uber.obj.User consumer = 3;
   uber.obj.City source = 4;
+  uber.obj.Reservation reservation = 5;
   // int64 rideVacancies = 4;
 }
 

@@ -7,10 +7,8 @@ import org.apache.logging.log4j.Logger;
 import org.javatuples.Pair;
 import org.javatuples.Quartet;
 import org.javatuples.Triplet;
+import uber.proto.objects.*;
 import uber.proto.objects.Date;
-import uber.proto.objects.Hop;
-import uber.proto.objects.Ride;
-import uber.proto.objects.User;
 import uber.proto.rpc.PlanPathRequest;
 import uber.proto.rpc.SnapshotRequest;
 import utils.Utils;
@@ -91,11 +89,12 @@ public class ShardData {
             this.lock.writeLock().unlock();
         }
     }
-    public void reserveSeat(UUID srcCity, UUID rideID, int seat, User consumer) {
+    public void reserveSeat(UUID srcCity, UUID rideID, int seat, Reservation reservation) {
         this.lock.readLock().lock();
+        var consumer = reservation.getConsumer();
         try {
             var cityRides = this.cities.get(srcCity);
-            cityRides.addReservation(rideID, seat, consumer);
+            cityRides.addReservation(rideID, seat, reservation);
 
             log.info("Updated local database with a reservation of seat {} in ride {} for User({}, {}, {})",
                     seat, rideID, consumer.getFirstName(), consumer.getLastName(), consumer.getPhoneNumber());

@@ -44,11 +44,17 @@ message Ride {
 }
 
 message Hop {
-  uber.obj.City src = 1;
-  uber.obj.City dst = 2;
+  City src = 1;
+  City dst = 2;
+}
+
+message Reservation {
+  User consumer = 1;
+  ID transactionID = 2;
+  ID rideID = 3;
 }
 
 message RideStatus {
-  uber.obj.Ride ride = 1;
-  map<int32, uber.obj.User> reservations = 2;
+  Ride ride = 1;
+  map<int32, Reservation> reservations = 2;
 }

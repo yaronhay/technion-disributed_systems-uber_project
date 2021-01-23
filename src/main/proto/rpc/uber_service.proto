@@ -51,4 +51,5 @@ message UberSnapshotRequest {
 }
 message UberSnapshotResponse {
   uber.obj.RideStatus rideStatus = 1;
+    PlanPathRequest pathPlan = 2;
 }
