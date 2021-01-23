@@ -14,6 +14,7 @@ import uber.proto.objects.City;
 import uber.proto.objects.ID;
 import uber.proto.objects.Ride;
 import uber.proto.objects.User;
+import uber.proto.rpc.PlanPathRequest;
 import uber.proto.rpc.SnapshotRequest;
 import uber.proto.rpc.SnapshotResponse;
 import uber.proto.zk.*;
@@ -217,13 +218,14 @@ public class ShardServer {
             return false;
         }
 
+        if (!initRESTServer(cfg.restPort)) {
+            return false;
+        }
+
         if (!initGRPCServer(cfg.grpcPort)) {
             return false;
         }
 
-        if (!initRESTServer(cfg.restPort)) {
-            return false;
-        }
 
         return true;
     }
@@ -256,12 +258,12 @@ public class ShardServer {
         return servers;
     }
 
-    String tryLockSeat(UUID ride_id, int seat_no) throws InterruptedException, KeeperException {
+    String tryLockSeat(UUID ride_id, int seat_no, UUID transactionID) throws InterruptedException, KeeperException {
         var lock = getSeatLockZNode(ride_id, seat_no);
 
         try {
             this.zk.createNode(lock, CreateMode.PERSISTENT);
-            log.debug("Lock for seat {} of ride {} is created", seat_no, ride_id);
+            log.debug("Lock for seat {} of ride {} is created (Transaction ID {})", seat_no, ride_id, transactionID);
         } catch (KeeperException e) {
             if (e.code() != KeeperException.Code.NODEEXISTS) {
                 throw e;
@@ -272,20 +274,24 @@ public class ShardServer {
         var mylockpath = lock.append("lock_");
         mylockpath = this.zk.createNode(mylockpath, CreateMode.EPHEMERAL_SEQUENTIAL);
         var mylock = mylockpath.get(mylockpath.length() - 1);
-        log.debug("Lock for seat {} of ride {} is created", seat_no, ride_id);
+        log.debug("Lock {} for seat {} of ride {} is created (Transaction ID {})", mylock, seat_no, ride_id, transactionID);
 
         var children = this.zk.getChildrenStr(lock);
-        var min = Collections.min(children);
 
+        var min = Collections.min(children);
+        log.debug("My lock is {} all children of {} are (min is {}) {}", mylock, lock.str(), min, children);
         if (min.equals(mylock)) {
             if (!this.zk.nodeExists(lock.append("final"))) {
-                log.debug("Has lock for seat {} of ride {} is created", seat_no, ride_id);
+                log.info("Has lock {} for seat {} in ride {} (Transaction ID {})", mylock, seat_no, ride_id, transactionID);
                 // Has lock :)
                 return mylock;
+            } else {
+                log.debug("Has lock {} for seat {} in ride {} for an invalidated lock, aborting (Transaction ID {})", min, seat_no, ride_id, transactionID);
             }
         }
         // Release lock
-        this.releaseLockSeat(ride_id, seat_no, mylock);
+        this.releaseLockSeat(ride_id, seat_no, mylock,
+                String.format("Release due to server failure acquire lock (Transaction ID %s)", transactionID));
         return null;
     }
 
@@ -297,7 +303,7 @@ public class ShardServer {
         return ZK.Path("shards", shardID.toString(), "queue", "op_");
     }
 
-    void releaseLockSeat(UUID ride_id, int seat_no, String lock) throws InterruptedException, KeeperException {
+    void releaseLockSeat(UUID ride_id, int seat_no, String lock, String msg) throws InterruptedException, KeeperException {
         var seatLock = getSeatLockZNode(ride_id, seat_no);
         var mylockpath = seatLock.append(lock);
 
@@ -305,10 +311,10 @@ public class ShardServer {
             if (this.zk.nodeExists(mylockpath)) {
                 this.zk.delete(mylockpath);
             }
-            log.debug("Lock {} for seat {} of ride {} was released", lock, seat_no, ride_id);
+            log.info("Lock {} for seat {} of ride {} was released ({})", lock, seat_no, ride_id, msg);
         } catch (KeeperException e) {
             if (e.code() == KeeperException.Code.NONODE) {
-                log.debug("Lock {} for seat {} of ride {} doesn't exist", lock, seat_no, ride_id);
+                log.debug("Lock {} for seat {} of ride {} doesn't exist ({})", lock, seat_no, ride_id, msg);
             } else {
                 throw e;
             }
@@ -404,31 +410,39 @@ public class ShardServer {
     }
 
     boolean atomicSeatsReserve(AtomicReferenceArray<RPCUberService.OfferCollector.Offer> offers,
-                               User consumer, UUID transactionID) {
+                               User consumer, UUID transactionID, PlanPathRequest request) {
         log.debug("Starting atomic seats reservation (Transaction ID {})", transactionID);
         List<org.apache.zookeeper.Op> ops = new LinkedList<>();
         Map<UUID, List<Task>> shardTasks = new HashMap<>();
 
+        UUID pathSaveShardID = this.cityShard.get(
+                utils.UUID.fromID(request.getHops(0).getSrc().getId())
+        );
+        shardTasks.computeIfAbsent(pathSaveShardID, k -> new LinkedList<>())
+                .add(Task.newBuilder()
+                        .setAddPath(
+                                AddPathTask.newBuilder()
+                                        .setPath(request)
+                                        .build()
+                        )
+                        .build());
 
         for (int i = 0; i < offers.length(); i++) {
             var offer = offers.get(i);
+
+            var shardID = offer.shardID;
             var rideID = offer.rideOffer.getRideID();
             var rideUUID = utils.UUID.fromID(rideID);
             var seat = offer.rideOffer.getSeat();
-            var lock = offer.rideOffer.getLock();
 
             var seatLockZNode = getSeatLockZNode(rideUUID, seat);
-            var lockZnode = seatLockZNode.append(lock);
-            // ops.add(ZK.Op.getData(lockZnode));
-            //log.debug("Atomic seats reservation (Transaction ID {}) - Adding existence assertion for lock {}#{}/{}",
-            //        transactionID, rideUUID, seat, lock);
 
             var finalLockZnode = seatLockZNode.append("final");
             ops.add(ZK.Op.createNode(finalLockZnode, CreateMode.PERSISTENT));
             log.debug("Atomic seats reservation (Transaction ID {}) - Adding invalidation for lock {}#{}",
                     transactionID, rideUUID, seat);
 
-            var shardID = offer.shardID;
+
             var tasks = shardTasks.computeIfAbsent(shardID, k -> new LinkedList<>());
 
             tasks.add(Task

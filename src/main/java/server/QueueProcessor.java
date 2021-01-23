@@ -93,6 +93,13 @@ public class QueueProcessor {
 
                     server.data.addRide(rideID, ride);
                 }
+                case ADDPATH -> {
+                    var task = item.getAddPath();
+                    var path = task.getPath();
+                    var transactionID = utils.UUID.fromID(path.getTransactionID());
+
+                    server.data.addPath(transactionID, path);
+                }
                 case TASK_NOT_SET -> {
                     log.warn("Task in task list {} is empty", opID);
                 }
@@ -152,9 +159,19 @@ public class QueueProcessor {
         log.info("Queue processor started");
         for (; ; ) {
             try {
-                var element = tasksQueue.take();
-                var opID = element.getValue0();
-                var taskList = element.getValue1();
+                var lastOP = lastOp.incrementAndGet();
+                Integer opID;
+                TaskList taskList;
+                while (true) {
+                    var element = tasksQueue.take();
+                    opID = element.getValue0();
+                    taskList = element.getValue1();
+                    if (opID == lastOP) {
+                        break;
+                    } else {
+                        tasksQueue.add(element);
+                    }
+                }
 
                 log.info("Started handling task {} for tasks queue", opID);
                 try {
@@ -173,12 +190,13 @@ public class QueueProcessor {
     }
 
     public void markTaskDoneAsync(int opID) {
+        log.debug("Marking Task {} as done", opID);
         var taskPath = queueRoot.append(String.format("op_%010d", lastAddedOp.get()));
         var myPath = taskPath.append(this.server.id.toString());
 
         this.zk.createNode(myPath, CreateMode.PERSISTENT, (rc1, path) -> {
             if (rc1 != KeeperException.Code.OK) {
-                log.error("Error on creation of task {} done indicator node:\nPath: {}\nCode: {}", opID, path.str(), rc1);
+                log.warn("Error on creation of task {} done indicator node:\nPath: {}\nSent Path: {}\nCode: {}", opID, path.str(), myPath.str(), rc1);
                 return;
             }
 

@@ -121,28 +121,43 @@ public final class RESTServer extends utils.RESTController {
             return;
         }
         UUID cityID = utils.UUID.fromID(ride.getSource().getId());
-        var cityShard = shardServer.cityShard.get(cityID);
-        var shardServers = shardServer.shardsServers.get(cityShard);
 
-        var serverID = utils.Random.getRandomKey(shardServers);
-        var stub = shardServer.rpcClient.getServiceServerStub(cityShard, serverID);
 
-        log.info("Submitting a new ride to server {} in shard {} with:\n{}", serverID, cityShard, req.toString(2));
-        var res = stub.addRide(ride);
+        ID res = null;
+        while (true) {
+            var cityShard = shardServer.cityShard.get(cityID);
+            var shardServers = shardServer.shardsServers.get(cityShard);
+            if (shardServers.size() == 0) {
+                break;
+            }
 
-        if (!res.getVal().isEmpty()) {
-            UUID rideID = utils.UUID.fromID(res);
-            resp.httpCode = 200;
-            resp.body.put("result", "success");
-            resp.body.put("ride-id", rideID.toString());
-            log.info("Server {} in shard {} added the new ride successfully with id {}",
-                    serverID, cityShard, rideID);
-        } else {
-            resp.httpCode = 500;
-            resp.body.put("result", "failure");
-            log.info("Server {} in shard {} failed to added the new ride successfully a failure response was sent to the client",
-                    serverID, cityShard);
+            var serverID = utils.Random.getRandomKey(shardServers);
+            log.info("Submitting a new ride to server {} in shard {} with:\n{}", serverID, cityShard, req.toString(2));
+            var stub = shardServer.rpcClient.getServiceServerStub(cityShard, serverID);
+            try {
+                res = stub.addRide(ride);
+            } catch (io.grpc.StatusRuntimeException e) {
+                log.warn("Add ride StatusRuntimeException", e);
+                continue;
+            }
+
+            if (res != null && !res.getVal().isEmpty()) {
+                UUID rideID = utils.UUID.fromID(res);
+                resp.httpCode = 200;
+                resp.body.put("result", "success");
+                resp.body.put("ride-id", rideID.toString());
+                log.info("Server {} in shard {} added the new ride successfully with id {}",
+                        serverID, cityShard, rideID);
+                return;
+            } else {
+                resp.httpCode = 500;
+                resp.body.put("result", "failure");
+                log.info("Server {} in shard {} failed to didn't add the new ride successfully a failure response was sent to the client",
+                        serverID, cityShard);
+            }
         }
+        resp.httpCode = 500;
+        resp.body.put("result", "failure");
     }
 
     PlanPathRequest asPathRequest(JSONObject req, ID transactionID) {

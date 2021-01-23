@@ -13,6 +13,7 @@ public interface NodeCallback {
             ZKPath zkPath = ZKPath.fromStr(path);
             zkPath = zkPath.prefix(zkPath.length() - 2);
             zkPath = zkPath.append(name);
+            System.out.println("HII" + path + ";;;" + name);
 
             var code = KeeperException.Code.get(rc);
             callback.processResult(code, zkPath);

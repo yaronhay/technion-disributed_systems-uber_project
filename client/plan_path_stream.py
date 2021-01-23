@@ -23,7 +23,6 @@ def do_plan_path(server_file, plan):
 
     if result['result'] == 'success':
         rides = result['rides']['rides']
-        print(rides)
         ride_list = []
 
         for i, ride in enumerate(rides):

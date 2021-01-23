@@ -11,6 +11,7 @@ import uber.proto.objects.Date;
 import uber.proto.objects.Hop;
 import uber.proto.objects.Ride;
 import uber.proto.objects.User;
+import uber.proto.rpc.PlanPathRequest;
 import uber.proto.rpc.SnapshotRequest;
 import utils.Utils;
 
@@ -57,6 +58,17 @@ public class ShardData {
             }
             log.info("Added ride {} -> {} on {} #{} to local database",
                     src.getName(), dst.getName(), Utils.dateAsStr(ride.getDate()), rideID);
+        } finally {
+            this.lock.readLock().unlock();
+        }
+    }
+
+    public void addPath(UUID transactionID, PlanPathRequest path) {
+        this.lock.readLock().lock();
+        try {
+            UUID cityID = utils.UUID.fromID(path.getHops(0).getSrc().getId());
+            CityRides cityRides = this.get(cityID);
+            cityRides.addPath(transactionID, path);
         } finally {
             this.lock.readLock().unlock();
         }

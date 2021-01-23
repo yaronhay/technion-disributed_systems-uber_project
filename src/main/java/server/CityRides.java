@@ -8,6 +8,7 @@ import org.apache.zookeeper.KeeperException;
 import org.javatuples.Pair;
 import uber.proto.objects.*;
 import uber.proto.objects.Date;
+import uber.proto.rpc.PlanPathRequest;
 import uber.proto.rpc.SnapshotRequest;
 import utils.Utils;
 
@@ -19,6 +20,7 @@ import java.util.stream.IntStream;
 public class CityRides {
     final static Logger log = LogManager.getLogger();
 
+    private Map<UUID, PlanPathRequest> paths;
     private Map<UUID, List<User>> reservations;
     private Map<String, List<UUID>> schedule;
     private Map<UUID, Ride> rides;
@@ -47,6 +49,7 @@ public class CityRides {
         this.reservations = new ConcurrentHashMap<>();
         this.schedule = new ConcurrentHashMap<>();
         this.rides = new ConcurrentHashMap<>();
+        this.paths = new ConcurrentHashMap<>();
         this.server = server;
     }
 
@@ -55,6 +58,10 @@ public class CityRides {
         this.rides.putIfAbsent(rideID, ride);
         this.getSchedule(dateKey).add(rideID);
         this.getReservations(rideID, ride.getVacancies());
+    }
+
+    public void addPath(UUID transactionID, PlanPathRequest path) {
+        this.paths.putIfAbsent(transactionID, path);
     }
 
     public boolean hasRide(UUID rideID) {
@@ -126,42 +133,54 @@ public class CityRides {
 
                     var info = new RideTestInfo();
                     if (goodOffer(ride, emptyHop, info)) {
-                        var seat = getEmptySeat(rideID, ride, info);
+                        var limit = 0;
+                        boolean breakExteralLoop = false;
+                        while (true) {
+                            var seat = getEmptySeat(rideID, ride, info, limit);
+                            limit = seat;
+                            if (seat != 0) {
+                                boolean locked;
+                                String lock = null;
+                                try {
+                                    lock = this.server.tryLockSeat(rideID, seat, transactionID);
+                                    locked = lock != null;
+                                } catch (KeeperException | InterruptedException e) {
+                                    log.error("Exception when trying to lock {}_{}", rideID, seat, e);
+                                    locked = false;
+                                }
 
-                        if (seat != 0) {
-                            boolean locked;
-                            String lock = null;
-                            try {
-                                lock = this.server.tryLockSeat(rideID, seat);
-                                locked = lock != null;
-                            } catch (KeeperException | InterruptedException e) {
-                                log.error("Exception when trying to lock {}_{}", rideID, seat, e);
-                                locked = false;
-                            }
-
-                            if (locked) {
-                                server.serversWatcher.addWatchRemoveGroup(serverID, transactionID);
-                                var finalLock = lock;
-                                server.serversWatcher.addWatchRemove(transactionID, () -> {
-                                    try {
-                                        server.releaseLockSeat(rideID, seat, finalLock);
-                                    } catch (InterruptedException | KeeperException e) {
-                                        log.error("Exception when trying to release lock {} on {}_{}", finalLock, rideID, seat, e);
-                                    }
-                                });
-                                offers[emptyHopIdx] = rideID;
-                                seats[emptyHopIdx] = seat;
-                                locks[emptyHopIdx] = lock;
-                                rides[emptyHopIdx] = ride;
-                                remove = emptyHopIdx;
-                                log.debug("Checking ride (Transaction ID {})\n\t{}\n\t{}\n\tLocked!",
-                                        transactionID, info.s1, info.s2);
-                                break;
+                                if (locked) {
+                                    server.serversWatcher.addWatchRemoveGroup(serverID, transactionID);
+                                    var finalLock = lock;
+                                    server.serversWatcher.addWatchRemove(transactionID, () -> {
+                                        try {
+                                            server.releaseLockSeat(rideID, seat, finalLock,
+                                                    String.format("Release due to server failure (Transaction ID %s)", transactionID));
+                                        } catch (InterruptedException | KeeperException e) {
+                                            log.error("Exception when trying to release lock {} on {}_{}", finalLock, rideID, seat, e);
+                                        }
+                                    });
+                                    offers[emptyHopIdx] = rideID;
+                                    seats[emptyHopIdx] = seat;
+                                    locks[emptyHopIdx] = lock;
+                                    rides[emptyHopIdx] = ride;
+                                    remove = emptyHopIdx;
+                                    log.debug("Checking ride (Transaction ID {})\n\t{}\n\t{}\n\tLocked!",
+                                            transactionID, info.s1, info.s2);
+                                    breakExteralLoop = true;
+                                    break; // for external loop
+                                } else {
+                                    log.debug("Checking ride (Transaction ID {})\n\t{}\n\t{}\n\tFailed to lock",
+                                            transactionID, info.s1, info.s2);
+                                }
                             } else {
-                                log.debug("Checking ride (Transaction ID {})\n\t{}\n\t{}\n\tFailed to lock",
-                                        transactionID, info.s1, info.s2);
+                                break;
                             }
                         }
+                        if (breakExteralLoop) {
+                            break;
+                        }
+
                     }
                     log.debug("Checking ride (Transaction ID {})\n\t{}\n\t{}",
                             transactionID, info.s1, info.s2);
@@ -176,7 +195,7 @@ public class CityRides {
         return emptyHops.isEmpty();
     }
 
-    int getEmptySeat(UUID rideID, Ride ride, RideTestInfo info) {
+    int getEmptySeat(UUID rideID, Ride ride, RideTestInfo info, int limit) {
         var reservations = getReservations(rideID, ride.getVacancies());
         int seat = 0;
 
@@ -184,7 +203,7 @@ public class CityRides {
             int i = 0;
             for (User user : reservations) {
                 i++;
-                if (user == null) {
+                if (user == null && i > limit) {
                     seat = i;
                     break;
                 }

@@ -101,7 +101,7 @@ public class ZKConnection {
         log.debug("Creating ZNode : {}", node.str());
         try {
             var node1 = this.createNode(node, CreateMode.PERSISTENT);
-            log.debug("Created ZNode : {}", node.str());
+            log.debug("Created ZNode : {}", node1);
             return node1;
         } catch (KeeperException e) {
             log.debug("Error when Creating ZNode : {} {}", node.str(), e.toString());
@@ -111,7 +111,7 @@ public class ZKConnection {
 
     public ZKPath createNode(ZKPath node, CreateMode mode, byte[] data) throws KeeperException, InterruptedException {
         var created = this.zk.create(node.str(), data, ALL_PERMISSIONS, mode);
-        log.debug("Created ZNode {} mode {}", node.str(), mode);
+        log.debug("Created ZNode {} mode {}", created, mode);
         return ZKPath.fromStr(created);
     }
 
@@ -213,10 +213,13 @@ public class ZKConnection {
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 } catch (KeeperException e) {
-                    log.error(new ParameterizedMessage("Keeper exception thrown when deleting node {} recursively:\n", node.str()), e);
+
                     if (e.code() == KeeperException.Code.NONODE) {
                         callback.processResult(KeeperException.Code.OK);
                         return;
+                    } else {
+                        log.error(new ParameterizedMessage("Keeper exception thrown when deleting node {} recursively:\n", node.str()), e);
+                        callback.processResult(e.code());
                     }
                 }
             } else {

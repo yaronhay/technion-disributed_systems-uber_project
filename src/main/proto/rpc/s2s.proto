@@ -50,6 +50,7 @@ message ReleaseSeatsResponse {
 message SnapshotRequest {
   uber.obj.ID snapshotID = 1;
   uber.obj.RideStatus rideStatus = 2;
+
 }
 message SnapshotResponse {
 }

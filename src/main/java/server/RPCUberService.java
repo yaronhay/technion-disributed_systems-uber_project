@@ -9,11 +9,8 @@ import io.grpc.stub.StreamObserver;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
-import org.apache.zookeeper.KeeperException;
-import org.javatuples.Pair;
 import uber.proto.objects.*;
 import uber.proto.rpc.*;
-import uber.proto.zk.SnapshotTask;
 import utils.AbortableCountDownLatch;
 
 import java.util.*;
@@ -102,7 +99,7 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
         var success = this.server.atomicSeatsReserve(
                 offerCollector.offers,
                 request.getConsumer(),
-                transactionUUID);
+                transactionUUID, request);
 
         var response = PlanPathResponse.newBuilder();
         if (!success) {
@@ -212,9 +209,12 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
             public UUID shardID;
             public UUID serverID;
             public RideOffer rideOffer;
-            public String s;
+            public String direction;
             @Override public String toString() {
-                return String.format("Offer(%s, rideid%s, shard%s)", s, utils.UUID.fromID(id), shardID);
+                return String.format("Offer(%s, seat %d, lock %s, rideid %s, shard %s)",
+                        direction,
+                        rideOffer.getSeat(), rideOffer.getLock(),
+                        utils.UUID.fromID(id), shardID);
             }
         }
 
@@ -310,7 +310,7 @@ public class RPCUberService extends UberRideServiceGrpc.UberRideServiceImplBase 
 
                         var src = server.getCityByID(val.getRideInfo().getSource().getId()).getName();
                         var dst = server.getCityByID(val.getRideInfo().getDestination().getId()).getName();
-                        offer.s = String.format("%s->%s", src, dst);
+                        offer.direction = String.format("%s->%s", src, dst);
 
                         if (!offers.compareAndSet(i, null, offer)) {
                             toRelease.add(offer);

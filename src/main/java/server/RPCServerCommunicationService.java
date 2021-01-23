@@ -73,7 +73,8 @@ public class RPCServerCommunicationService extends ServerCommunicationGrpc.Serve
 
             try {
                 // Todo remove from remove listener
-                this.server.releaseLockSeat(ride_id, seat, lock);
+                this.server.releaseLockSeat(ride_id, seat, lock,
+                        String.format("Release due to server request (Transaction ID %s)", transactionID));
             } catch (InterruptedException | KeeperException e) {
                 log.error("Failed to release lock {} (Transaction ID {}) for seat {} ride {}",
                         lock, transactionID, seat, ride_id);

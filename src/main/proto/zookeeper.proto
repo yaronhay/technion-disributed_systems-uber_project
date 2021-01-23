@@ -6,6 +6,7 @@ option java_package = "uber.proto.zk";
 package uber.zk;
 
 import "objects.proto";
+import "rpc/uber_service.proto";
 
 message Server {
   bytes id = 1;
@@ -41,6 +42,10 @@ message AddRideTask {
   uber.obj.Ride ride = 1;
 }
 
+message AddPathTask {
+  uber.rpc.PlanPathRequest path = 1;
+}
+
 
 message SnapshotTask {
   message ServerEndPoint {
@@ -58,6 +63,7 @@ message Task {
     InvalidSeatLockTask invalidSeatLock = 2;
     SnapshotTask  snapshot = 3;
     AddRideTask addRide = 4;
+    AddPathTask addPath = 5;
   }
 }
 
